@@ -14,8 +14,9 @@ import com.ouc.tcp.tool.TCP_TOOL;
 public class TCP_Receiver extends TCP_Receiver_ADT {
 	
 	private TCP_PACKET ackPack;	//回复的ACK报文段
-	int sequence=1;//用于记录当前待接收的包序号，注意包序号不完全是
-		
+	// RDT2.1/2.2，序列号sequence0/1交替
+	int sequence=0;//用于记录当前待接收的包序号，注意包序号不完全是
+	
 	/*构造函数*/
 	public TCP_Receiver() {
 		super();	//调用超类构造函数
@@ -26,6 +27,8 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 	//接收到数据报：检查校验和，设置回复的ACK报文段
 	public void rdt_recv(TCP_PACKET recvPack) {
 		//检查校验码，生成ACK
+		int dataLength = recvPack.getTcpS().getData().length;
+		int dataSequence = (recvPack.getTcpH().getTh_seq() - 1) / dataLength;
 		if(CheckSum.computeChkSum(recvPack) == recvPack.getTcpH().getTh_sum()) {
 			//生成ACK报文段（设置确认号）
 			tcpH.setTh_ack(recvPack.getTcpH().getTh_seq());
@@ -35,13 +38,15 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 			reply(ackPack);			
 			
 			//将接收到的正确有序的数据插入data队列，准备交付
-			dataQueue.add(recvPack.getTcpS().getData());				
-			sequence++;
+			if (dataSequence == sequence){
+				dataQueue.add(recvPack.getTcpS().getData());				
+				sequence++;
+			}
 		}else{
 			System.out.println("Recieve Computed: "+CheckSum.computeChkSum(recvPack));
 			System.out.println("Recieved Packet"+recvPack.getTcpH().getTh_sum());
 			System.out.println("Problem: Packet Number: "+recvPack.getTcpH().getTh_seq()+" + InnerSeq:  "+sequence);
-			tcpH.setTh_ack(-1);
+			tcpH.setTh_ack((sequence-1) * dataLength+1); // 不再使用NAK
 			ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
 			tcpH.setTh_sum(CheckSum.computeChkSum(ackPack));
 			//回复ACK报文段
