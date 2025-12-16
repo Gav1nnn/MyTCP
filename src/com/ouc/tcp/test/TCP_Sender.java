@@ -13,29 +13,57 @@ public class TCP_Sender extends TCP_Sender_ADT {
 	
 	private TCP_PACKET tcpPack;	//待发送的TCP数据报
 	private volatile int flag = 0;
-	
+	// private boolean waitingACK = false; // 是否正在等待 ACK（RDT3.0 的 WAIT_ACK 状态）
+
 	/*构造函数*/
 	public TCP_Sender() {
 		super();	//调用超类构造函数
 		super.initTCP_Sender(this);		//初始化TCP发送端
 	}
+
+	// 加入计时器
+	private UDT_Timer timer;
+
+	// 新增方法启动定时器
+	private void startTimer(){
+		timer = new UDT_Timer();
+		timer.schedule(
+			new UDT_RetransTask(client, tcpPack), 
+			// 2s后开始重传，每2s重传一次
+			2000,
+			2000
+		);
+	}
+
+	// 新增方法停用定时器
+	private void stopTimer(){
+		if (timer != null){
+			timer.cancel();
+			timer = null;
+		}
+	}
 	
 	@Override
 	//可靠发送（应用层调用）：封装应用层数据，产生TCP数据报；需要修改
 	public void rdt_send(int dataIndex, int[] appData) {
+
 		
 		//生成TCP数据报（设置序号和数据字段/校验和),注意打包的顺序
+		// 1.设置序号
 		tcpH.setTh_seq(dataIndex * appData.length + 1);//包序号设置为字节流号：
+		// 2.封装数据
 		tcpS.setData(appData);
 		tcpPack = new TCP_PACKET(tcpH, tcpS, destinAddr);		
-		//更新带有checksum的TCP 报文头		
+		// 3.计算校验和		
 		tcpH.setTh_sum(CheckSum.computeChkSum(tcpPack));
 		tcpPack.setTcpH(tcpH);
-		
-		//发送TCP数据报
+		// 4.发送数据包
 		udt_send(tcpPack);
 		flag = 0;
-		
+
+		// 5.启动定时器
+		startTimer();
+		// 6.进入WAIT_ACK状态
 		//等待ACK报文
 		//waitACK();
 		while (flag==0);
@@ -45,7 +73,7 @@ public class TCP_Sender extends TCP_Sender_ADT {
 	//不可靠发送：将打包好的TCP数据报通过不可靠传输信道发送；仅需修改错误标志
 	public void udt_send(TCP_PACKET stcpPack) {
 		//设置错误控制标志
-		tcpH.setTh_eflag((byte)1);		
+		tcpH.setTh_eflag((byte)7);		
 		//System.out.println("to send: "+stcpPack.getTcpH().getTh_seq());				
 		//发送数据报
 		client.send(stcpPack);
@@ -54,20 +82,24 @@ public class TCP_Sender extends TCP_Sender_ADT {
 	@Override
 	//需要修改
 	public void waitACK() {
-		//循环检查ackQueue
-		//循环检查确认号对列中是否有新收到的ACK		
+		
+		// 循环检查ackQueue
+		// 循环检查确认号对列中是否有新收到的ACK		
 		if(!ackQueue.isEmpty()){
 			int currentAck=ackQueue.poll();
 			// System.out.println("CurrentAck: "+currentAck);
 			if (currentAck == tcpPack.getTcpH().getTh_seq()){
 				System.out.println("Clear: "+tcpPack.getTcpH().getTh_seq());
+				stopTimer();
 				flag = 1;
 				//break;
-			}else{
-				System.out.println("Retransmit: "+tcpPack.getTcpH().getTh_seq());
-				udt_send(tcpPack);
-				flag = 0;
 			}
+			// 发送失败即由计时器出发重传
+			// else{
+			// 	System.out.println("Retransmit: "+tcpPack.getTcpH().getTh_seq());
+			// 	udt_send(tcpPack);
+			// 	flag = 0;
+			// }
 		}
 	}
 

@@ -29,28 +29,24 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 		//检查校验码，生成ACK
 		int dataLength = recvPack.getTcpS().getData().length;
 		int dataSequence = (recvPack.getTcpH().getTh_seq() - 1) / dataLength;
+	
+		// 校验和正确
 		if(CheckSum.computeChkSum(recvPack) == recvPack.getTcpH().getTh_sum()) {
-			//生成ACK报文段（设置确认号）
-			tcpH.setTh_ack(recvPack.getTcpH().getTh_seq());
-			ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-			tcpH.setTh_sum(CheckSum.computeChkSum(ackPack));
-			//回复ACK报文段
-			reply(ackPack);			
-			
-			//将接收到的正确有序的数据插入data队列，准备交付
-			if (dataSequence == sequence){
-				dataQueue.add(recvPack.getTcpS().getData());				
-				sequence++;
+			// 对期望序号之前的包都回复ACK
+			if(dataSequence <= sequence){
+				//生成ACK报文段（设置确认号）
+				tcpH.setTh_ack(recvPack.getTcpH().getTh_seq());
+				ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
+				tcpH.setTh_sum(CheckSum.computeChkSum(ackPack));
+				//回复ACK报文段
+				reply(ackPack);			
+				
+				// 只交付正好是期望序号的数据
+				if (dataSequence == sequence){
+					dataQueue.add(recvPack.getTcpS().getData());				
+					sequence = dataSequence+1;
+				}
 			}
-		}else{
-			System.out.println("Recieve Computed: "+CheckSum.computeChkSum(recvPack));
-			System.out.println("Recieved Packet"+recvPack.getTcpH().getTh_sum());
-			System.out.println("Problem: Packet Number: "+recvPack.getTcpH().getTh_seq()+" + InnerSeq:  "+sequence);
-			tcpH.setTh_ack((sequence-1) * dataLength+1); // 不再使用NAK
-			ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-			tcpH.setTh_sum(CheckSum.computeChkSum(ackPack));
-			//回复ACK报文段
-			reply(ackPack);
 		}
 		
 		System.out.println();
@@ -93,7 +89,7 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 	//回复ACK报文段
 	public void reply(TCP_PACKET replyPack) {
 		//设置错误控制标志
-		tcpH.setTh_eflag((byte)1);	//eFlag=0，信道无错误
+		tcpH.setTh_eflag((byte)7);	//eFlag=0，信道无错误
 				
 		//发送数据报
 		client.send(replyPack);
