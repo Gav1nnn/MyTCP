@@ -29,9 +29,9 @@ public class TCP_Sender extends TCP_Sender_ADT {
 		timer = new UDT_Timer();
 		timer.schedule(
 			new UDT_RetransTask(client, tcpPack), 
-			// 2s后开始重传，每2s重传一次
-			2000,
-			2000
+			// 3s后开始重传，每3s重传一次
+			3000,
+			3000
 		);
 	}
 
