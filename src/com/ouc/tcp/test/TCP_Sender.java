@@ -3,6 +3,8 @@
 
 package com.ouc.tcp.test;
 
+import javax.management.RuntimeErrorException;
+
 import com.ouc.tcp.client.TCP_Sender_ADT;
 import com.ouc.tcp.client.UDT_RetransTask;
 import com.ouc.tcp.client.UDT_Timer;
@@ -12,8 +14,9 @@ import com.ouc.tcp.tool.TCP_TOOL;
 public class TCP_Sender extends TCP_Sender_ADT {
 	
 	private TCP_PACKET tcpPack;	//待发送的TCP数据报
-	private volatile int flag = 0;
-	// private boolean waitingACK = false; // 是否正在等待 ACK（RDT3.0 的 WAIT_ACK 状态）
+	private volatile int flag = WindowFlag.NOT_FULL.ordinal();
+	// 引入窗口大小
+	private final SenderWindow window = new SenderWindow(16);
 
 	/*构造函数*/
 	public TCP_Sender() {
@@ -57,16 +60,24 @@ public class TCP_Sender extends TCP_Sender_ADT {
 		// 3.计算校验和		
 		tcpH.setTh_sum(CheckSum.computeChkSum(tcpPack));
 		tcpPack.setTcpH(tcpH);
-		// 4.发送数据包
-		udt_send(tcpPack);
-		flag = 0;
+		// 4.检查窗口是否已满
+		if(window.isFull()){
+			flag = WindowFlag.FULL.ordinal();
+		}
+		// 如果满，阻塞等待窗口滑动
+		while (flag == WindowFlag.FULL.ordinal()) {
+			
+		}
 
-		// 5.启动定时器
-		startTimer();
-		// 6.进入WAIT_ACK状态
-		//等待ACK报文
-		//waitACK();
-		while (flag==0);
+		// 5.将包加入窗口并发送
+		try {
+			window.pushPacket(tcpPack.clone());
+		} catch(CloneNotSupportedException e){
+			throw new RuntimeException(e);
+		}
+
+		// 发送并启动这个包的计时器
+		window.sendPacket(this, client, 3000, 3000);
 	}
 	
 	@Override
@@ -82,24 +93,16 @@ public class TCP_Sender extends TCP_Sender_ADT {
 	@Override
 	//需要修改
 	public void waitACK() {
-		
-		// 循环检查ackQueue
-		// 循环检查确认号对列中是否有新收到的ACK		
-		if(!ackQueue.isEmpty()){
-			int currentAck=ackQueue.poll();
-			// System.out.println("CurrentAck: "+currentAck);
-			if (currentAck == tcpPack.getTcpH().getTh_seq()){
-				System.out.println("Clear: "+tcpPack.getTcpH().getTh_seq());
-				stopTimer();
-				flag = 1;
-				//break;
+		// 检查ACK队列
+		if (!ackQueue.isEmpty()){
+			int currentAck = ackQueue.poll();
+			window.ackPacket(currentAck);
+
+			// 如果窗口不满，解除阻塞
+			if (!window.isFull()){
+				flag = WindowFlag.NOT_FULL.ordinal();
 			}
-			// 发送失败即由计时器出发重传
-			// else{
-			// 	System.out.println("Retransmit: "+tcpPack.getTcpH().getTh_seq());
-			// 	udt_send(tcpPack);
-			// 	flag = 0;
-			// }
+
 		}
 	}
 
@@ -109,10 +112,9 @@ public class TCP_Sender extends TCP_Sender_ADT {
 		System.out.println("Receive ACK Number： "+ recvPack.getTcpH().getTh_ack());
 		ackQueue.add(recvPack.getTcpH().getTh_ack());
 	    System.out.println();	
-	   
 	    //处理ACK报文
 	    waitACK();
-	   
+
 	}
 	
 }
