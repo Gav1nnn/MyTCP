@@ -2,75 +2,128 @@ package com.ouc.tcp.test;
 
 import com.ouc.tcp.client.Client;
 import com.ouc.tcp.client.UDT_RetransTask;
+import com.ouc.tcp.client.UDT_Timer;
 import com.ouc.tcp.message.TCP_PACKET;
 
+import java.util.TimerTask;
+import java.util.concurrent.LinkedBlockingDeque;
+
 public class SenderWindow {
-    private int base;
-    private int nextexcepted;
-    private int rear;
-    private int size;
-    private SenderStru[] window;
+    private final int size = 16;
+    private UDT_Timer timer;
+    private final TCP_Sender sender;
 
-    public SenderWindow(int size){
-        this.base = 0;
-        this.nextexcepted = 0;
-        this.rear = 0;
-        this.size = size;
-        this.window = new SenderStru[size];
-        for(int i=0; i<size; i++){
-            this.window[i] = new SenderStru();
+    private final LinkedBlockingDeque<SenderStru> window;
+
+    public SenderWindow(TCP_Sender sender){
+        this.sender = sender;
+        this.window = new LinkedBlockingDeque<>();
+        this.timer = new UDT_Timer(); 
+    }
+
+    public class GBNTimeroutTask extends TimerTask {
+        private final SenderWindow window;
+
+        public GBNTimeroutTask(SenderWindow window){
+            this.window = window;
         }
-        
+
+        // 超时重传整个窗口
+        @Override
+        public void run(){
+            window.sendWindow();
+        }
     }
 
-    public boolean isFull() {return rear-base == size;}
+    public boolean isEmpty() {return window.isEmpty();}
 
-    public boolean isEmpty() {return rear == base;}
+    public boolean isFull() {return window.size()>=size;}
 
-    public boolean isFinished() {return nextexcepted == rear;}
-
-    private int getIdx(int seq) {return seq % size;}
-
-    // 将包放入窗口
-    public void pushPacket(TCP_PACKET packet) {
-        int idx = getIdx(rear);
-        // 初始化
-        window[idx].setWindow(packet, SenderFlag.NOT_ACKED.ordinal());
-        rear++;
+    // 先移除再重置timer
+    public void resetTimer(){
+        timer.cancel();
+        timer = new UDT_Timer();
+        if (!isEmpty()){
+            timer.schedule(new GBNTimeroutTask(this), 3000, 3000);
+        }
     }
 
-    // 发送窗口中未发送的包，并启动计时器
-    public void sendPacket(TCP_Sender sender, Client client, int delay, int period){
-        // 窗口为空或者已发送
-        if(isEmpty() || isFinished()) return ;
+    // 阻塞式入窗并发送
+    public void putAndSend(TCP_PACKET packet) {
+        synchronized(this) {
+            // 1.窗口满就阻塞等待
+            while (isFull()) {
+                try{
+                    this.wait();
+                } catch(InterruptedException e){
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+    
 
-        int idx = getIdx(nextexcepted);
-        TCP_PACKET packet = window[idx].getPacket();
+        // 2.若窗口之前为空：从空->非空，需要启动计时器
+        boolean wasEmpty = window.isEmpty();
 
-        // 为这个包启动计时器
-        window[idx].timePacket(new UDT_RetransTask(client, packet), delay, period);
-        nextexcepted++;
+        // 3.入窗（放队尾：保持发送顺序）
+        SenderStru stru = new SenderStru(packet, SenderFlag.NOT_ACKED.ordinal());
+        window.addLast(stru);
 
-        // 发送
-        sender.udt_send(packet);
-    }
-
-    // 处理ACK以及窗口滑动
-    public void ackPacket(int seq){
-        // 遍历窗口寻找对应的序列号
-        for (int i=base; i != rear; i++){
-            int idx = getIdx(i);
-            if (window[idx].getPacket().getTcpH().getTh_seq() == seq && !window[idx].isAcked()){
-                window[idx].ackPacket();
-                break;
+        // 4.启动计时器（只在空->非空时）
+        if (wasEmpty) {
+            if (!window.isEmpty()) {
+            timer = new UDT_Timer();
+            timer.schedule(new GBNTimeroutTask(this), 3000, 3000);
             }
         }
 
-        // 滑动窗口，如果base位置的包已经确认，向右移动
-        while (base != rear && window[getIdx(base)].isAcked()) {
-            int idx = getIdx(base);
-            window[idx].resetWindow();
-            base++;
+        // 5.立即发送这个新加入的包
+        sender.udt_send(stru.getPacket());
+        }
+    }
+
+
+
+    // 超时后，把窗口里还没被确认的包，全部重新发送
+    public void sendWindow(){
+        for(SenderStru pack : window){
+            if (pack.isAcked() == false) {
+                sender.udt_send(pack.getPacket());
+            }
+        }
+    }
+
+    // 处理ACK以及窗口滑动
+    public void ackPacket(int ack){
+        synchronized(this){
+            boolean remove = false;
+
+            // GBN 累计确认：队头 seq <= ack 的都可以移除
+            while (true) {
+                SenderStru first = window.peekFirst();
+                if (first == null) break;
+
+                int seq = first.getPacket().getTcpH().getTh_seq();
+                if (seq <= ack) {
+                    window.pollFirst();
+                    first.ackPacket();
+                    remove = true;
+                } else {
+                    break;
+                }
+            }
+
+            if (remove) {
+                // base前移了：重置计时器
+                if (window.isEmpty()){
+                    timer.cancel();
+                } else {
+                    resetTimer();
+                }
+
+                // 窗口有空位了：唤醒阻塞等待的发送线程
+                this.notifyAll();
+            }
         }
     }
 }

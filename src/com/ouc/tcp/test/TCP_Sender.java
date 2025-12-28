@@ -14,36 +14,14 @@ import com.ouc.tcp.tool.TCP_TOOL;
 public class TCP_Sender extends TCP_Sender_ADT {
 	
 	private TCP_PACKET tcpPack;	//待发送的TCP数据报
-	private volatile int flag = WindowFlag.NOT_FULL.ordinal();
 	// 引入窗口大小
-	private final SenderWindow window = new SenderWindow(16);
+	private final SenderWindow window;
 
 	/*构造函数*/
 	public TCP_Sender() {
 		super();	//调用超类构造函数
 		super.initTCP_Sender(this);		//初始化TCP发送端
-	}
-
-	// 加入计时器
-	private UDT_Timer timer;
-
-	// 新增方法启动定时器
-	private void startTimer(){
-		timer = new UDT_Timer();
-		timer.schedule(
-			new UDT_RetransTask(client, tcpPack), 
-			// 3s后开始重传，每3s重传一次
-			3000,
-			3000
-		);
-	}
-
-	// 新增方法停用定时器
-	private void stopTimer(){
-		if (timer != null){
-			timer.cancel();
-			timer = null;
-		}
+		window = new SenderWindow(this);
 	}
 	
 	@Override
@@ -60,24 +38,13 @@ public class TCP_Sender extends TCP_Sender_ADT {
 		// 3.计算校验和		
 		tcpH.setTh_sum(CheckSum.computeChkSum(tcpPack));
 		tcpPack.setTcpH(tcpH);
-		// 4.检查窗口是否已满
-		if(window.isFull()){
-			flag = WindowFlag.FULL.ordinal();
-		}
-		// 如果满，阻塞等待窗口滑动
-		while (flag == WindowFlag.FULL.ordinal()) {
-			
-		}
 
 		// 5.将包加入窗口并发送
 		try {
-			window.pushPacket(tcpPack.clone());
+			window.putAndSend(tcpPack.clone());
 		} catch(CloneNotSupportedException e){
 			throw new RuntimeException(e);
 		}
-
-		// 发送并启动这个包的计时器
-		window.sendPacket(this, client, 3000, 3000);
 	}
 	
 	@Override
@@ -93,28 +60,20 @@ public class TCP_Sender extends TCP_Sender_ADT {
 	@Override
 	//需要修改
 	public void waitACK() {
-		// 检查ACK队列
-		if (!ackQueue.isEmpty()){
-			int currentAck = ackQueue.poll();
-			window.ackPacket(currentAck);
 
-			// 如果窗口不满，解除阻塞
-			if (!window.isFull()){
-				flag = WindowFlag.NOT_FULL.ordinal();
-			}
-
-		}
 	}
 
 	@Override
 	//接收到ACK报文：检查校验和，将确认号插入ack队列;NACK的确认号为－1；不需要修改
 	public void recv(TCP_PACKET recvPack) {
-		System.out.println("Receive ACK Number： "+ recvPack.getTcpH().getTh_ack());
+		//System.out.println("Receive ACK Number： "+ recvPack.getTcpH().getTh_ack());
 		ackQueue.add(recvPack.getTcpH().getTh_ack());
 	    System.out.println();	
 	    //处理ACK报文
-	    waitACK();
-
+	    if (!ackQueue.isEmpty()) {
+			int currentAck = ackQueue.poll();
+			window.ackPacket(currentAck);	
+		}
 	}
 	
 }

@@ -6,18 +6,21 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.TimerTask;
+
+import javax.management.RuntimeErrorException;
 
 import com.ouc.tcp.client.TCP_Receiver_ADT;
+import com.ouc.tcp.client.UDT_Timer;
 import com.ouc.tcp.message.*;
 import com.ouc.tcp.tool.TCP_TOOL;
 
 public class TCP_Receiver extends TCP_Receiver_ADT {
 	
-	// private TCP_PACKET ackPack;	//回复的ACK报文段
-	// // RDT2.1/2.2，序列号sequence0/1交替
-	// int sequence=0;//用于记录当前待接收的包序号，注意包序号不完全是
 	private TCP_PACKET ackPacket;
+	private UDT_Timer timer = new UDT_Timer();
 	private ReceiverWindow window = new ReceiverWindow(16);
+	private int lastAckSeq = 0;
 	
 	/*构造函数*/
 	public TCP_Receiver() {
@@ -26,41 +29,87 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 	}
 
 	@Override
-	//接收到数据报：检查校验和，设置回复的ACK报文段
 	public void rdt_recv(TCP_PACKET recvPack) {
-		int dataLength = recvPack.getTcpS().getData().length;
-		// 检查校验和
-		if (CheckSum.computeChkSum(recvPack) == recvPack.getTcpH().getTh_sum()){
-			// 尝试放入缓存窗口
-			int bufferResult = window.bufferPacket(recvPack);
+		int dataLenth = recvPack.getTcpS().getData().length;
 
-			// 如果是有效包则都需要恢复ACK（有序、重复、基序号）
-			if (bufferResult==AckFlag.ORDERED.ordinal() || bufferResult==AckFlag.DUPLICATE.ordinal() || bufferResult==AckFlag.IS_BASE.ordinal()){
-				// 设置ACK报文
-				tcpH.setTh_ack(recvPack.getTcpH().getTh_seq());
-				ackPacket = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-				tcpH.setTh_sum(CheckSum.computeChkSum(ackPacket));
+		// 一个小工具：构造并发送 ACK（立即）
+		java.util.function.IntConsumer sendAckNow = (ackNum) -> {
+			tcpH.setTh_ack(ackNum);
+			TCP_PACKET ap = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
+			tcpH.setTh_sum(CheckSum.computeChkSum(ap));
+			ap.setTcpH(tcpH);
+			reply(ap);
+		};
 
-				// 发送ACK
-				reply(ackPacket);
+		// checksum 错：立即回重复 ACK（不推进 base）
+		if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
+			// 取消可能存在的延迟 ACK，避免后续发“过时 ACK”
+			if (timer != null) timer.cancel();
+			timer = new UDT_Timer();
+			sendAckNow.accept(lastAckSeq);
+			return;
+		}
+
+		// checksum 对：先尝试缓存
+		int bufferResult;
+		try {
+			bufferResult = window.bufferPacket(recvPack.clone());
+		} catch (CloneNotSupportedException e) {
+			throw new RuntimeException(e);
+		}
+
+		// 如果是 base（按序到达），则连续交付并推进 base，然后做 500ms 累积确认
+		if (bufferResult == AckFlag.IS_BASE.ordinal()) {
+			boolean deliveredAny = false;
+			int newestInOrderSeq = lastAckSeq;
+
+			TCP_PACKET p = window.getPacket();
+			while (p != null) {
+				deliveredAny = true;
+				dataQueue.add(p.getTcpS().getData());
+
+				// 这里沿用你现有 ACK 定义：ACK = 最后按序交付包的 th_seq
+				newestInOrderSeq = p.getTcpH().getTh_seq();
+
+				p = window.getPacket();
 			}
 
-			// 如果是可以交付的包，就连续交付
-			if (bufferResult == AckFlag.IS_BASE.ordinal()){
-				TCP_PACKET packet = window.getPacket();
-				while (packet != null) {
-					dataQueue.add(packet.getTcpS().getData());
-					packet = window.getPacket();
+			if (deliveredAny) {
+				lastAckSeq = newestInOrderSeq;
+			}
+
+			// 重新安排 500ms 的“累计确认”
+			if (timer != null) timer.cancel();
+			timer = new UDT_Timer();
+
+			final int ackToSend = lastAckSeq;  // 关键：捕获到局部变量，避免 ackPacket 被后续覆盖产生竞态
+			final TCP_PACKET delayedAck = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
+			tcpH.setTh_ack(ackToSend);
+			tcpH.setTh_sum(CheckSum.computeChkSum(delayedAck));
+			delayedAck.setTcpH(tcpH);
+
+			timer.schedule(new TimerTask() {
+				@Override
+				public void run() {
+					reply(delayedAck);
 				}
-
-			}
+			}, 500);
 
 			System.out.println();
-
-			// 交付数据
 			deliver_data();
+			return;
 		}
+
+		// 不是 base：ORDERED、DUPLICATE、UNORDERED
+		// -> 立即回重复 ACK（dupACK），以支持后续 Reno 的 3 dupACK 快速重传
+		if (timer != null) timer.cancel();
+		timer = new UDT_Timer();
+		sendAckNow.accept(lastAckSeq);
+
+		System.out.println();
+		deliver_data();
 	}
+
 
 	@Override
 	//交付数据（将数据写入文件）；不需要修改

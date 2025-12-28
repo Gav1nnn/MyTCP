@@ -7,6 +7,10 @@ public class ReceiverWindow {
     private final int size;
     private final ReceiverStru[] window;
 
+    public int getBase(){
+        return base;
+    }
+
     private int getIdx(int seq){
         return seq % size;
     }
