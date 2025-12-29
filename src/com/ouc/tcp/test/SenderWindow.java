@@ -9,11 +9,21 @@ import java.util.TimerTask;
 import java.util.concurrent.LinkedBlockingDeque;
 
 public class SenderWindow {
-    private final int size = 16;
-    private UDT_Timer timer;
-    private final TCP_Sender sender;
+    private final int size = 16; //窗口大小
+    private UDT_Timer timer; // 计时器
+    private final TCP_Sender sender; // 发送端对象
 
-    private final LinkedBlockingDeque<SenderStru> window;
+    // 新增dupACK计数
+    private int lastAck = -1; // 上一个ACK序号
+    private int dupAckCount = 0; // 重复ACK计数
+    private final int DUP_ACK_THRESHOLD = 3; // 触发快速重传的重复ACK阈值
+
+    private final LinkedBlockingDeque<SenderStru> window; // 发送窗口
+
+    private int cwnd = 1; //拥塞窗口初始值为1
+    private double cwnd_d = 1.0; //拥塞窗口的双精度值，用于慢启动阶段的指数增长
+    private int ssthresh = 16; //慢启动阈值初始值为16
+
 
     public SenderWindow(TCP_Sender sender){
         this.sender = sender;
@@ -31,13 +41,58 @@ public class SenderWindow {
         // 超时重传整个窗口
         @Override
         public void run(){
+            synchronized(window) {
+                window.onTimeout();
+                window.sendWindow();
+            }
             window.sendWindow();
         }
     }
 
+    private int effectiveCwnd() {
+        return Math.min(cwnd, size);
+    }
+
     public boolean isEmpty() {return window.isEmpty();}
 
-    public boolean isFull() {return window.size()>=size;}
+    public boolean isFull() {return window.size()>=effectiveCwnd();}
+
+    // Tahoe:快重传
+    private void resendPacket(int ack){
+        SenderStru first = window.peekFirst();
+        if (first == null) return;
+
+        int seglen = first.getPacket().getTcpS().getData().length;
+        int expectedSeq = ack + seglen;
+
+        for (SenderStru stru : window) {
+            int seq = stru.getPacket().getTcpH().getTh_seq();
+            if (seq == expectedSeq) {
+                sender.udt_send(stru.getPacket());
+                break;
+            }
+        }
+    }
+
+    // Tahoe:超时重传
+    private void onTimeout(){
+        ssthresh = Math.max(1, cwnd / 2);
+        cwnd = 1;
+        cwnd_d = 1.0;
+        lastAck = -1;
+        dupAckCount = 0;
+    }
+
+    // Tahoe:处理收到的ACK
+    public void onNewAck(int ack){
+        if(cwnd < ssthresh){
+            cwnd++;
+            cwnd_d = cwnd;
+        } else {
+            cwnd_d += 1.0 / cwnd;
+            cwnd = (int)cwnd_d;
+        }
+    }
 
     // 先移除再重置timer
     public void resetTimer(){
@@ -112,7 +167,30 @@ public class SenderWindow {
                     break;
                 }
             }
+            // Tahoe:cwnd调整
+            if (remove) {
+                onNewAck(ack);
+            }
 
+            // Tahoe:dupACK处理 + 3dupACK快重传
+            if (ack == lastAck) {
+                dupAckCount++;
+            } else {
+                lastAck = ack;
+                dupAckCount = 1;
+            }
+            
+            if (dupAckCount >= DUP_ACK_THRESHOLD) {
+                ssthresh = Math.max(1, cwnd / 2);
+                cwnd = 1;
+                cwnd_d = (double)cwnd;
+                resendPacket(ack);
+                dupAckCount = 0; // 重置重复ACK计数
+            }
+
+
+
+            // 计时器&唤醒发送线程  
             if (remove) {
                 // base前移了：重置计时器
                 if (window.isEmpty()){

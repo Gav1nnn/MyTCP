@@ -31,23 +31,13 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 	@Override
 	public void rdt_recv(TCP_PACKET recvPack) {
 		int dataLenth = recvPack.getTcpS().getData().length;
-
-		// 一个小工具：构造并发送 ACK（立即）
-		java.util.function.IntConsumer sendAckNow = (ackNum) -> {
-			tcpH.setTh_ack(ackNum);
-			TCP_PACKET ap = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-			tcpH.setTh_sum(CheckSum.computeChkSum(ap));
-			ap.setTcpH(tcpH);
-			reply(ap);
-		};
-
-		// checksum 错：立即回重复 ACK（不推进 base）
+		// checksum 错误：丢弃报文，不予 ACK
 		if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
-			// 取消可能存在的延迟 ACK，避免后续发“过时 ACK”
-			if (timer != null) timer.cancel();
-			timer = new UDT_Timer();
-			sendAckNow.accept(lastAckSeq);
+			// 避免ACK风暴
+			System.out.println();
+			deliver_data();
 			return;
+
 		}
 
 		// checksum 对：先尝试缓存
@@ -60,51 +50,35 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 
 		// 如果是 base（按序到达），则连续交付并推进 base，然后做 500ms 累积确认
 		if (bufferResult == AckFlag.IS_BASE.ordinal()) {
-			boolean deliveredAny = false;
-			int newestInOrderSeq = lastAckSeq;
-
 			TCP_PACKET p = window.getPacket();
 			while (p != null) {
-				deliveredAny = true;
 				dataQueue.add(p.getTcpS().getData());
-
-				// 这里沿用你现有 ACK 定义：ACK = 最后按序交付包的 th_seq
-				newestInOrderSeq = p.getTcpH().getTh_seq();
+				tcpH.setTh_ack(p.getTcpH().getTh_seq());
+				ackPacket = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
+				tcpH.setTh_sum(CheckSum.computeChkSum(ackPacket));
+				ackPacket.setTcpH(tcpH);
 
 				p = window.getPacket();
-			}
-
-			if (deliveredAny) {
-				lastAckSeq = newestInOrderSeq;
 			}
 
 			// 重新安排 500ms 的“累计确认”
 			if (timer != null) timer.cancel();
 			timer = new UDT_Timer();
-
-			final int ackToSend = lastAckSeq;  // 关键：捕获到局部变量，避免 ackPacket 被后续覆盖产生竞态
-			final TCP_PACKET delayedAck = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-			tcpH.setTh_ack(ackToSend);
-			tcpH.setTh_sum(CheckSum.computeChkSum(delayedAck));
-			delayedAck.setTcpH(tcpH);
-
+			TCP_PACKET delayedAck = ackPacket;
 			timer.schedule(new TimerTask() {
 				@Override
 				public void run() {
-					reply(delayedAck);
+					if (delayedAck != null) reply(delayedAck);
 				}
 			}, 500);
 
 			System.out.println();
 			deliver_data();
 			return;
-		}
-
-		// 不是 base：ORDERED、DUPLICATE、UNORDERED
-		// -> 立即回重复 ACK（dupACK），以支持后续 Reno 的 3 dupACK 快速重传
-		if (timer != null) timer.cancel();
-		timer = new UDT_Timer();
-		sendAckNow.accept(lastAckSeq);
+		} else {
+			// 不是 base，则立即发送 ACK（重复 ACK 或无序到达）
+			if (ackPacket != null) reply(ackPacket);
+		}	
 
 		System.out.println();
 		deliver_data();
