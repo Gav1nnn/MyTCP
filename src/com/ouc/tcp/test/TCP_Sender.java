@@ -15,13 +15,13 @@ public class TCP_Sender extends TCP_Sender_ADT {
 	
 	private TCP_PACKET tcpPack;	//待发送的TCP数据报
 	// 引入窗口大小
-	private final SenderWindow window;
+	private final SenderWindowViz window;
 
 	/*构造函数*/
 	public TCP_Sender() {
 		super();	//调用超类构造函数
 		super.initTCP_Sender(this);		//初始化TCP发送端
-		window = new SenderWindow(this);
+		window = new SenderWindowViz(this);
 	}
 	
 	@Override
