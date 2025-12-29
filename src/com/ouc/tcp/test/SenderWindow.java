@@ -182,7 +182,7 @@ public class SenderWindow {
             
             if (dupAckCount >= DUP_ACK_THRESHOLD) {
                 ssthresh = Math.max(1, cwnd / 2);
-                cwnd = 1;
+                cwnd = ssthresh;
                 cwnd_d = (double)cwnd;
                 resendPacket(ack);
                 dupAckCount = 0; // 重置重复ACK计数
