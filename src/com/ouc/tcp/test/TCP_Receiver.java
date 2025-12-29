@@ -32,21 +32,16 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 	public void rdt_recv(TCP_PACKET recvPack) {
 		int dataLenth = recvPack.getTcpS().getData().length;
 
-		// 一个小工具：构造并发送 ACK（立即）
-		java.util.function.IntConsumer sendAckNow = (ackNum) -> {
-			tcpH.setTh_ack(ackNum);
-			TCP_PACKET ap = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-			tcpH.setTh_sum(CheckSum.computeChkSum(ap));
-			ap.setTcpH(tcpH);
-			reply(ap);
-		};
-
 		// checksum 错：立即回重复 ACK（不推进 base）
 		if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
 			// 取消可能存在的延迟 ACK，避免后续发“过时 ACK”
 			if (timer != null) timer.cancel();
 			timer = new UDT_Timer();
-			sendAckNow.accept(lastAckSeq);
+			tcpH.setTh_ack(lastAckSeq);
+			TCP_PACKET ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
+			tcpH.setTh_sum(CheckSum.computeChkSum(ackPack));
+			ackPack.setTcpH(tcpH);
+			reply(ackPack);
 			return;
 		}
 
@@ -104,7 +99,12 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 		// -> 立即回重复 ACK（dupACK），以支持后续 Reno 的 3 dupACK 快速重传
 		if (timer != null) timer.cancel();
 		timer = new UDT_Timer();
-		sendAckNow.accept(lastAckSeq);
+
+        tcpH.setTh_ack(lastAckSeq);
+        TCP_PACKET ackPack = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
+        tcpH.setTh_sum(CheckSum.computeChkSum(ackPack));
+        ackPack.setTcpH(tcpH);
+        reply(ackPack);
 
 		System.out.println();
 		deliver_data();
