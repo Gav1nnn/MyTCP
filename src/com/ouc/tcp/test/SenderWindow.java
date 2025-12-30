@@ -43,9 +43,10 @@ public class SenderWindow {
         public void run(){
             synchronized(window) {
                 window.onTimeout();
-                window.sendWindow();
+                window.resendBase();
+                window.resetTimer();
             }
-            window.sendWindow();
+            // window.sendWindow();
         }
     }
 
@@ -56,6 +57,13 @@ public class SenderWindow {
     public boolean isEmpty() {return window.isEmpty();}
 
     public boolean isFull() {return window.size()>=effectiveCwnd();}
+
+    private void resendBase(){
+        SenderStru first = window.peekFirst();
+        if (first != null) {
+            sender.udt_send(first.getPacket());
+        }
+    }
 
     // Tahoe:快重传
     private void resendPacket(int ack){
@@ -93,6 +101,23 @@ public class SenderWindow {
             cwnd = (int)cwnd_d;
         }
     }
+
+    // 根据“本次ACK累计确认了多少段”来更新cwnd（修复累计确认导致的增长错误）
+    public void onAckedSegments(int ackedSegs) {
+        for (int i = 0; i < ackedSegs; i++) {
+            if (cwnd < ssthresh) {
+                // 慢启动：每确认一个段 cwnd + 1（从而一轮RTT近似翻倍）
+                cwnd++;
+                cwnd_d = (double)cwnd;
+            } else {
+                // 拥塞避免：每个ACK让 cwnd += 1/cwnd，累计到 1 个 RTT 约 +1
+                cwnd_d += 1.0 / cwnd;
+                cwnd = (int) cwnd_d;
+                if (cwnd < 1) cwnd = 1;
+            }
+        }
+    }
+
 
     // 先移除再重置timer
     public void resetTimer(){
@@ -152,6 +177,7 @@ public class SenderWindow {
     public void ackPacket(int ack){
         synchronized(this){
             boolean remove = false;
+            int ackedSeqs = 0;
 
             // GBN 累计确认：队头 seq <= ack 的都可以移除
             while (true) {
@@ -162,14 +188,15 @@ public class SenderWindow {
                 if (seq <= ack) {
                     window.pollFirst();
                     first.ackPacket();
-                    remove = true;
+                    ackedSeqs++;
                 } else {
                     break;
                 }
             }
+            remove = (ackedSeqs > 0);
             // Tahoe:cwnd调整
             if (remove) {
-                onNewAck(ack);
+                onAckedSegments(ackedSeqs);
             }
 
             // Tahoe:dupACK处理 + 3dupACK快重传
@@ -181,10 +208,11 @@ public class SenderWindow {
             }
             
             if (dupAckCount >= DUP_ACK_THRESHOLD) {
-                ssthresh = Math.max(1, cwnd / 2);
+                ssthresh = Math.max(2, cwnd / 2);
                 cwnd = 1;
                 cwnd_d = (double)cwnd;
                 resendPacket(ack);
+                resetTimer();
                 dupAckCount = 0; // 重置重复ACK计数
             }
 
