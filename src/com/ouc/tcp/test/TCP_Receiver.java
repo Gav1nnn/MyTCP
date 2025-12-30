@@ -63,7 +63,7 @@ public class TCP_Receiver extends TCP_Receiver_ADT {
 				deliveredAny = true;
 				dataQueue.add(p.getTcpS().getData());
 
-				// 这里沿用你现有 ACK 定义：ACK = 最后按序交付包的 th_seq
+				// 这里沿用现有 ACK 定义：ACK = 最后按序交付包的 th_seq
 				newestInOrderSeq = p.getTcpH().getTh_seq();
 
 				p = window.getPacket();
