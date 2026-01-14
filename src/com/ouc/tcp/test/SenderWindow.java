@@ -124,7 +124,7 @@ public class SenderWindow {
         timer.cancel();
         timer = new UDT_Timer();
         if (!isEmpty()){
-            timer.schedule(new GBNTimeroutTask(this), 3000, 3000);
+            timer.schedule(new GBNTimeroutTask(this), 1000, 1000);
         }
     }
 
@@ -153,7 +153,7 @@ public class SenderWindow {
         if (wasEmpty) {
             if (!window.isEmpty()) {
             timer = new UDT_Timer();
-            timer.schedule(new GBNTimeroutTask(this), 3000, 3000);
+            timer.schedule(new GBNTimeroutTask(this), 1000, 1000);
             }
         }
 
