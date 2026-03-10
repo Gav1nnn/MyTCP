@@ -148,30 +148,6 @@ cwnd = ssthresh + 3
 
 这样可以避免重新进入慢启动阶段，使网络吞吐量更高。
 
-------
-
-# 项目结构（示例）
-
-```
-MyTCP
-│
-├── TCP_Sender.java
-├── TCP_Receiver.java
-├── SenderWindow.java
-├── ReceiverWindow.java
-├── CheckSum.java
-│
-├── protocol
-│   ├── RDT1.0
-│   ├── RDT2.x
-│   ├── RDT3.0
-│   ├── SR
-│   ├── TCP
-│   ├── TCP-Tahoe
-│   └── TCP-Reno
-│
-└── log
-```
 
 ------
 
