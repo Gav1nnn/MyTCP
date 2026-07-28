@@ -54,6 +54,17 @@ number is always the first byte that has not been received in order.
 Acknowledgment transmission policy, including delayed acknowledgments, is
 implemented separately from byte reassembly.
 
+## Send path
+
+The standalone sender assigns sequence numbers only when bytes are admitted by
+both the congestion window and the peer's advertised receive window. Sent
+segments remain in an ordered retransmission queue until cumulatively
+acknowledged. Partial acknowledgments trim only the acknowledged prefix of the
+oldest segment, while acknowledgments beyond `SND.NXT` cannot release data.
+
+Peer window updates are ordered with `SND.WL1` and `SND.WL2` so stale
+acknowledgments cannot overwrite a newer send-window value.
+
 ## Build
 
 JDK 17 and Maven are required.

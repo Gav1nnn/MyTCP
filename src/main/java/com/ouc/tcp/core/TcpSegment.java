@@ -130,6 +130,20 @@ public final class TcpSegment {
                 replacementPayload);
     }
 
+    public TcpSegment withSequenceNumber(long replacementSequenceNumber) {
+        return new TcpSegment(
+                sourceAddress,
+                destinationAddress,
+                sourcePort,
+                destinationPort,
+                replacementSequenceNumber,
+                acknowledgmentNumber,
+                flags,
+                advertisedWindow,
+                checksum,
+                payload);
+    }
+
     public TcpSegment withChecksum(int replacementChecksum) {
         return new TcpSegment(
                 sourceAddress,
