@@ -6,6 +6,7 @@ import com.ouc.tcp.checksum.TcpChecksum;
 import com.ouc.tcp.client.TCP_Receiver_ADT;
 import com.ouc.tcp.config.Constant;
 import com.ouc.tcp.core.ReceiveResult;
+import com.ouc.tcp.core.ReceiverConfig;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.core.TcpFlag;
 import com.ouc.tcp.core.TcpReceiverEngine;
@@ -27,12 +28,17 @@ public final class TCP_Receiver extends TCP_Receiver_ADT {
     private static final int RECEIVE_WINDOW_BYTES = 32 * 1024;
 
     private final FrameworkPacketCodec packetCodec = new FrameworkPacketCodec();
-    private final TcpReceiverEngine receiverEngine = new TcpReceiverEngine(
-            SequenceNumber32.of(INITIAL_SEQUENCE_NUMBER),
-            RECEIVE_WINDOW_BYTES);
+    private final TcpReceiverEngine receiverEngine;
 
     public TCP_Receiver() {
         super();
+        receiverEngine = new TcpReceiverEngine(new ReceiverConfig(
+                ipv4(Constant.LocalAddr),
+                ipv4(Constant.LocalAddr),
+                localPort,
+                destinPort,
+                SequenceNumber32.of(INITIAL_SEQUENCE_NUMBER),
+                RECEIVE_WINDOW_BYTES));
         super.initTCP_Receiver(this);
     }
 

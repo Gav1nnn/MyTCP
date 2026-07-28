@@ -33,7 +33,6 @@ public final class TCP_Sender extends TCP_Sender_ADT {
 
     public TCP_Sender() {
         super();
-        super.initTCP_Sender(this);
 
         Inet4Address localAddress = ipv4(Constant.LocalAddr);
         Inet4Address remoteAddress = ipv4(destinAddr);
@@ -53,6 +52,7 @@ public final class TCP_Sender extends TCP_Sender_ADT {
                 Clock.system(),
                 scheduler,
                 this::sendCoreSegment);
+        super.initTCP_Sender(this);
     }
 
     @Override

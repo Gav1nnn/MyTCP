@@ -11,17 +11,29 @@ import java.util.Objects;
 public final class TcpReceiverEngine {
     private final ReceiveControlBlock controlBlock;
     private final ReassemblyQueue reassemblyQueue;
+    private final ReceiverConfig config;
 
     public TcpReceiverEngine(
             SequenceNumber32 initialReceiveNext, int receiveBufferCapacity) {
+        config = null;
         this.controlBlock =
                 new ReceiveControlBlock(initialReceiveNext, receiveBufferCapacity);
         this.reassemblyQueue = new ReassemblyQueue();
     }
 
+    public TcpReceiverEngine(ReceiverConfig config) {
+        this.config = Objects.requireNonNull(config, "config");
+        controlBlock = new ReceiveControlBlock(
+                config.initialReceiveNext(), config.receiveBufferCapacity());
+        reassemblyQueue = new ReassemblyQueue();
+    }
+
     public synchronized ReceiveResult receive(TcpSegment segment) {
         Objects.requireNonNull(segment, "segment");
 
+        if (!matchesConnection(segment)) {
+            return result(ReceiveDisposition.WRONG_CONNECTION, new byte[0], false);
+        }
         if (!hasValidChecksum(segment)) {
             return result(ReceiveDisposition.CHECKSUM_FAILED, new byte[0], false);
         }
@@ -74,7 +86,7 @@ public final class TcpReceiverEngine {
         return new ReceiveResult(
                 disposition,
                 controlBlock.receiveNext(),
-                controlBlock.advertisedWindow(),
+                advertisedWindow(),
                 deliveredBytes,
                 acknowledgmentRequired);
     }
@@ -82,6 +94,14 @@ public final class TcpReceiverEngine {
     private boolean isWithinReceiveWindow(SequenceNumber32 sequenceNumber) {
         return controlBlock.receiveNext().distanceTo(sequenceNumber)
                 < controlBlock.advertisedWindow();
+    }
+
+    private boolean matchesConnection(TcpSegment segment) {
+        return config == null
+                || (segment.sourceAddress().equals(config.remoteAddress())
+                        && segment.destinationAddress().equals(config.localAddress())
+                        && segment.sourcePort() == config.remotePort()
+                        && segment.destinationPort() == config.localPort());
     }
 
     private static boolean hasValidChecksum(TcpSegment segment) {

@@ -4,6 +4,7 @@ import com.ouc.tcp.checksum.TcpChecksum;
 import com.ouc.tcp.congestion.CongestionPhase;
 import com.ouc.tcp.core.AckProcessingResult;
 import com.ouc.tcp.core.ReceiveResult;
+import com.ouc.tcp.core.ReceiverConfig;
 import com.ouc.tcp.core.SenderConfig;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.core.TcpFlag;
@@ -167,8 +168,13 @@ class TcpEndToEndTest {
             receiverAddress = ipv4("198.51.100.2");
             ManualClock clock = new ManualClock();
             scheduler = new DeterministicScheduler(clock);
-            receiver = new TcpReceiverEngine(
-                    SequenceNumber32.of(initialSequence), WINDOW);
+            receiver = new TcpReceiverEngine(new ReceiverConfig(
+                    receiverAddress,
+                    senderAddress,
+                    RECEIVER_PORT,
+                    SENDER_PORT,
+                    SequenceNumber32.of(initialSequence),
+                    WINDOW));
             forward = new DeterministicChannel(scheduler, this::receiveData);
             reverse = new DeterministicChannel(scheduler, this::receiveAck);
             sender = new TcpSenderEngine(

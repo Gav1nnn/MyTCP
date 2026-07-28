@@ -174,6 +174,50 @@ class TcpReceiverEngineTest {
         assertArrayEquals(new byte[] {1, 2}, result.deliveredBytes());
     }
 
+    @Test
+    void configuredReceiverAcceptsItsConnectionTuple() throws Exception {
+        TcpReceiverEngine receiver = configuredReceiver();
+
+        ReceiveResult result = receiver.receive(segment(100, new byte[] {1, 2}));
+
+        assertEquals(ReceiveDisposition.IN_ORDER, result.disposition());
+        assertArrayEquals(new byte[] {1, 2}, result.deliveredBytes());
+    }
+
+    @Test
+    void configuredReceiverRejectsSegmentForAnotherConnection()
+            throws Exception {
+        TcpReceiverEngine receiver = configuredReceiver();
+        TcpSegment wrongConnection = TcpChecksum.apply(new TcpSegment(
+                ipv4("203.0.113.9"),
+                ipv4("198.51.100.2"),
+                19001,
+                19002,
+                100,
+                0,
+                Set.of(TcpFlag.ACK),
+                8,
+                0,
+                new byte[] {1, 2}));
+
+        ReceiveResult result = receiver.receive(wrongConnection);
+
+        assertEquals(ReceiveDisposition.WRONG_CONNECTION, result.disposition());
+        assertArrayEquals(new byte[0], result.deliveredBytes());
+        assertFalse(result.acknowledgmentRequired());
+        assertEquals(100, receiver.receiveNext().toLong());
+    }
+
+    private static TcpReceiverEngine configuredReceiver() throws Exception {
+        return new TcpReceiverEngine(new ReceiverConfig(
+                ipv4("198.51.100.2"),
+                ipv4("192.0.2.1"),
+                19002,
+                19001,
+                SequenceNumber32.of(100),
+                8));
+    }
+
     private static TcpSegment segment(long sequenceNumber, byte[] payload) throws Exception {
         return TcpChecksum.apply(new TcpSegment(
                 ipv4("192.0.2.1"),
