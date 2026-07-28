@@ -43,6 +43,17 @@ to the TCP core. Sequence and acknowledgment numbers therefore count bytes,
 not framework array elements or packets. The receiver performs the inverse
 conversion only after contiguous bytes are ready for application delivery.
 
+## Receive path
+
+The standalone receive engine validates the TCP checksum before changing
+connection state, applies RFC receive-window acceptability checks, trims
+overlapping data to the current window, buffers out-of-order bytes, and
+delivers only the contiguous range beginning at `RCV.NXT`. Its acknowledgment
+number is always the first byte that has not been received in order.
+
+Acknowledgment transmission policy, including delayed acknowledgments, is
+implemented separately from byte reassembly.
+
 ## Build
 
 JDK 17 and Maven are required.
