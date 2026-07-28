@@ -103,14 +103,39 @@ public final class RetransmissionQueue {
     }
 
     public TcpSegment retransmitEarliest(long sentAtNanos) {
+        return retransmitEarliestDueToTimeout(sentAtNanos);
+    }
+
+    public TcpSegment retransmitEarliestDueToTimeout(long sentAtNanos) {
+        OutstandingSegment earliest = earliest();
+        earliest.timeoutCount++;
+        markRetransmitted(earliest, sentAtNanos);
+        return earliest.segment;
+    }
+
+    public TcpSegment retransmitEarliestFast(long sentAtNanos) {
+        OutstandingSegment earliest = earliest();
+        markRetransmitted(earliest, sentAtNanos);
+        return earliest.segment;
+    }
+
+    public boolean earliestHasTimedOut() {
+        return earliest().timeoutCount > 0;
+    }
+
+    private OutstandingSegment earliest() {
         OutstandingSegment earliest = segments.peekFirst();
         if (earliest == null) {
             throw new IllegalStateException("no outstanding segment to retransmit");
         }
+        return earliest;
+    }
+
+    private static void markRetransmitted(
+            OutstandingSegment earliest, long sentAtNanos) {
         earliest.retransmitted = true;
         earliest.lastSentNanos = sentAtNanos;
         earliest.transmissionCount++;
-        return earliest.segment;
     }
 
     public long bytesInFlight() {
@@ -141,6 +166,7 @@ public final class RetransmissionQueue {
         private boolean retransmitted;
         private boolean rttSampleTaken;
         private int transmissionCount = 1;
+        private int timeoutCount;
 
         private OutstandingSegment(TcpSegment segment, long sentAtNanos) {
             this.segment = segment;

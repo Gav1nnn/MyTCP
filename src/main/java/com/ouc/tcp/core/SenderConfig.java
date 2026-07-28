@@ -16,7 +16,33 @@ public record SenderConfig(
         int localAdvertisedWindow,
         int peerAdvertisedWindow,
         int senderMaximumSegmentSize,
-        long initialCongestionWindow) {
+        long initialCongestionWindow,
+        long initialSlowStartThreshold) {
+
+    public SenderConfig(
+            Inet4Address localAddress,
+            Inet4Address remoteAddress,
+            int localPort,
+            int remotePort,
+            SequenceNumber32 initialSendNext,
+            SequenceNumber32 acknowledgmentNumber,
+            int localAdvertisedWindow,
+            int peerAdvertisedWindow,
+            int senderMaximumSegmentSize,
+            long initialCongestionWindow) {
+        this(
+                localAddress,
+                remoteAddress,
+                localPort,
+                remotePort,
+                initialSendNext,
+                acknowledgmentNumber,
+                localAdvertisedWindow,
+                peerAdvertisedWindow,
+                senderMaximumSegmentSize,
+                initialCongestionWindow,
+                SequenceNumber32.HALF_RANGE - 1);
+    }
 
     public SenderConfig {
         Objects.requireNonNull(localAddress, "localAddress");
@@ -35,6 +61,11 @@ public record SenderConfig(
                 || initialCongestionWindow >= SequenceNumber32.HALF_RANGE) {
             throw new IllegalArgumentException(
                     "initialCongestionWindow is outside the unambiguous sequence range");
+        }
+        if (initialSlowStartThreshold < 1
+                || initialSlowStartThreshold >= SequenceNumber32.HALF_RANGE) {
+            throw new IllegalArgumentException(
+                    "initialSlowStartThreshold is outside the unambiguous sequence range");
         }
     }
 

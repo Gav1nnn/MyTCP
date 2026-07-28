@@ -65,6 +65,12 @@ oldest segment, while acknowledgments beyond `SND.NXT` cannot release data.
 Peer window updates are ordered with `SND.WL1` and `SND.WL2` so stale
 acknowledgments cannot overwrite a newer send-window value.
 
+The Reno congestion controller uses appropriate byte counting in slow start
+and congestion avoidance. The first two qualifying duplicate acknowledgments
+can clock limited transmissions without increasing `cwnd`; the third triggers
+fast retransmit and fast recovery. Retransmission timeout loss returns `cwnd`
+to one SMSS and applies exponential RTO backoff independently.
+
 ## Build
 
 JDK 17 and Maven are required.
