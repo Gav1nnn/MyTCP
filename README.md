@@ -35,6 +35,14 @@ The framework entry points remain:
 - `com.ouc.tcp.test.TCP_Receiver`
 - `com.ouc.tcp.test.TestRun`
 
+## Data representation
+
+The framework application supplies data as Java `int[]` groups. The adapter
+encodes every integer as four bytes in network byte order before handing data
+to the TCP core. Sequence and acknowledgment numbers therefore count bytes,
+not framework array elements or packets. The receiver performs the inverse
+conversion only after contiguous bytes are ready for application delivery.
+
 ## Build
 
 JDK 17 and Maven are required.
