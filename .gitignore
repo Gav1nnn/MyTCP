@@ -1,0 +1,11 @@
+.DS_Store
+target/
+
+# Runtime output produced by the teaching framework
+Log.txt
+recvData.txt
+
+# IDE metadata
+.idea/
+.vscode/
+*.iml
