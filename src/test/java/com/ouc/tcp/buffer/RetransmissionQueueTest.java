@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.time.Duration;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -68,6 +69,34 @@ class RetransmissionQueueTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> queue.add(segment(103, new byte[] {4})));
+    }
+
+    @Test
+    void partialAckReturnsOnlyOneRttSampleForTheOriginalTransmission()
+            throws Exception {
+        RetransmissionQueue queue = new RetransmissionQueue();
+        queue.add(segment(100, new byte[] {1, 2, 3, 4}), 100);
+
+        RetransmissionQueue.AcknowledgmentResult partial =
+                queue.acknowledge(SequenceNumber32.of(102), 300);
+        RetransmissionQueue.AcknowledgmentResult remainder =
+                queue.acknowledge(SequenceNumber32.of(104), 500);
+
+        assertEquals(Duration.ofNanos(200), partial.rttSample().orElseThrow());
+        assertTrue(remainder.rttSample().isEmpty());
+    }
+
+    @Test
+    void ackCoveringRetransmittedDataHasNoRttSample() throws Exception {
+        RetransmissionQueue queue = new RetransmissionQueue();
+        queue.add(segment(100, new byte[] {1, 2}), 100);
+        queue.add(segment(102, new byte[] {3, 4}), 200);
+        queue.retransmitEarliest(300);
+
+        RetransmissionQueue.AcknowledgmentResult result =
+                queue.acknowledge(SequenceNumber32.of(104), 500);
+
+        assertTrue(result.rttSample().isEmpty());
     }
 
     private static TcpSegment segment(long sequenceNumber, byte[] payload) throws Exception {

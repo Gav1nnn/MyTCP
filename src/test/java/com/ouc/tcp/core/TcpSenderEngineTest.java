@@ -1,6 +1,8 @@
 package com.ouc.tcp.core;
 
 import com.ouc.tcp.checksum.TcpChecksum;
+import com.ouc.tcp.simulator.DeterministicScheduler;
+import com.ouc.tcp.simulator.ManualClock;
 import org.junit.jupiter.api.Test;
 
 import java.net.Inet4Address;
@@ -255,6 +257,7 @@ class TcpSenderEngineTest {
     private static TcpSenderEngine sender(
             long initialSequence, int receiverWindow, long congestionWindow, int smss)
             throws Exception {
+        ManualClock clock = new ManualClock();
         return new TcpSenderEngine(new SenderConfig(
                 ipv4("192.0.2.1"),
                 ipv4("198.51.100.2"),
@@ -265,7 +268,10 @@ class TcpSenderEngineTest {
                 4096,
                 receiverWindow,
                 smss,
-                congestionWindow));
+                congestionWindow),
+                clock,
+                new DeterministicScheduler(clock),
+                ignored -> { });
     }
 
     private static TcpSegment ack(long sequence, long acknowledgment, int window)

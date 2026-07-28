@@ -3,11 +3,18 @@ package com.ouc.tcp.core;
 import com.ouc.tcp.buffer.PendingDataBuffer;
 import com.ouc.tcp.buffer.RetransmissionQueue;
 import com.ouc.tcp.checksum.TcpChecksum;
+import com.ouc.tcp.timer.Clock;
+import com.ouc.tcp.timer.RetransmissionTimer;
+import com.ouc.tcp.timer.RttEstimator;
+import com.ouc.tcp.timer.Scheduler;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * Established-state TCP send path with cumulative acknowledgments and flow control.
@@ -17,9 +24,23 @@ public final class TcpSenderEngine {
     private final SendControlBlock controlBlock;
     private final PendingDataBuffer pendingData = new PendingDataBuffer();
     private final RetransmissionQueue retransmissionQueue = new RetransmissionQueue();
+    private final Clock clock;
+    private final Consumer<TcpSegment> retransmissionSink;
+    private final RttEstimator rttEstimator;
+    private final RetransmissionTimer retransmissionTimer;
 
-    public TcpSenderEngine(SenderConfig config) {
+    public TcpSenderEngine(
+            SenderConfig config,
+            Clock clock,
+            Scheduler scheduler,
+            Consumer<TcpSegment> retransmissionSink) {
         this.config = Objects.requireNonNull(config, "config");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.retransmissionSink =
+                Objects.requireNonNull(retransmissionSink, "retransmissionSink");
+        this.rttEstimator = new RttEstimator();
+        this.retransmissionTimer =
+                new RetransmissionTimer(Objects.requireNonNull(scheduler, "scheduler"));
         this.controlBlock = new SendControlBlock(
                 config.initialSendNext(),
                 config.peerAdvertisedWindow(),
@@ -66,7 +87,8 @@ public final class TcpSenderEngine {
         long newlyAcknowledgedBytes = 0;
         if (disposition == AckDisposition.NEW_ACK) {
             RetransmissionQueue.AcknowledgmentResult queueResult =
-                    retransmissionQueue.acknowledge(acknowledgment);
+                    retransmissionQueue.acknowledge(
+                            acknowledgment, clock.nanoTime());
             newlyAcknowledgedBytes = queueResult.acknowledgedBytes();
             long controlBlockAdvance =
                     controlBlock.sendUnacknowledged().distanceTo(acknowledgment);
@@ -75,6 +97,12 @@ public final class TcpSenderEngine {
                         "retransmission queue and send sequence space diverged");
             }
             controlBlock.advanceSendUnacknowledged(acknowledgment);
+            queueResult.rttSample().ifPresent(rttEstimator::recordSample);
+            if (retransmissionQueue.segmentCount() == 0) {
+                retransmissionTimer.stop();
+            } else {
+                restartRetransmissionTimer();
+            }
         }
 
         return ackResult(
@@ -117,6 +145,22 @@ public final class TcpSenderEngine {
         return retransmissionQueue.segments();
     }
 
+    public synchronized Duration retransmissionTimeout() {
+        return rttEstimator.retransmissionTimeout();
+    }
+
+    public synchronized Optional<Duration> smoothedRtt() {
+        return rttEstimator.smoothedRtt();
+    }
+
+    public synchronized Optional<Duration> rttVariation() {
+        return rttEstimator.rttVariation();
+    }
+
+    public synchronized boolean retransmissionTimerRunning() {
+        return retransmissionTimer.isRunning();
+    }
+
     private List<TcpSegment> emitPermittedSegments() {
         List<TcpSegment> transmissions = new ArrayList<>();
         while (!pendingData.isEmpty() && controlBlock.usableWindow() > 0) {
@@ -137,11 +181,34 @@ public final class TcpSenderEngine {
                     config.localAdvertisedWindow(),
                     0,
                     payload));
-            retransmissionQueue.add(segment);
+            boolean startTimer = retransmissionQueue.segmentCount() == 0;
+            retransmissionQueue.add(segment, clock.nanoTime());
             controlBlock.advanceSendNext(payloadLength);
             transmissions.add(segment);
+            if (startTimer) {
+                restartRetransmissionTimer();
+            }
         }
         return List.copyOf(transmissions);
+    }
+
+    private void restartRetransmissionTimer() {
+        retransmissionTimer.startOrRestart(
+                rttEstimator.retransmissionTimeout(), this::onRetransmissionTimeout);
+    }
+
+    private void onRetransmissionTimeout() {
+        TcpSegment retransmission;
+        synchronized (this) {
+            if (retransmissionQueue.segmentCount() == 0) {
+                return;
+            }
+            retransmission =
+                    retransmissionQueue.retransmitEarliest(clock.nanoTime());
+            rttEstimator.backOff();
+            restartRetransmissionTimer();
+        }
+        retransmissionSink.accept(retransmission);
     }
 
     private AckDisposition classifyAcknowledgment(SequenceNumber32 acknowledgment) {
