@@ -1,126 +1,98 @@
-/***************************2.1: ACK/NACK*****************/
-/***** Feng Hong; 2015-12-09******************************/
 package com.ouc.tcp.test;
+
+import com.ouc.tcp.adapter.FrameworkPacketCodec;
+import com.ouc.tcp.adapter.IntegerPayloadCodec;
+import com.ouc.tcp.checksum.TcpChecksum;
+import com.ouc.tcp.client.TCP_Receiver_ADT;
+import com.ouc.tcp.config.Constant;
+import com.ouc.tcp.core.ReceiveResult;
+import com.ouc.tcp.core.SequenceNumber32;
+import com.ouc.tcp.core.TcpFlag;
+import com.ouc.tcp.core.TcpReceiverEngine;
+import com.ouc.tcp.core.TcpSegment;
+import com.ouc.tcp.message.TCP_PACKET;
 
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.TimerTask;
+import java.net.Inet4Address;
+import java.util.Set;
 
-import javax.management.RuntimeErrorException;
+/**
+ * Teaching-framework receiver backed by the RFC-aligned transport core.
+ */
+public final class TCP_Receiver extends TCP_Receiver_ADT {
+    private static final long INITIAL_SEQUENCE_NUMBER = 1;
+    private static final int RECEIVE_WINDOW_BYTES = 32 * 1024;
 
-import com.ouc.tcp.client.TCP_Receiver_ADT;
-import com.ouc.tcp.client.UDT_Timer;
-import com.ouc.tcp.message.*;
-import com.ouc.tcp.tool.TCP_TOOL;
+    private final FrameworkPacketCodec packetCodec = new FrameworkPacketCodec();
+    private final TcpReceiverEngine receiverEngine = new TcpReceiverEngine(
+            SequenceNumber32.of(INITIAL_SEQUENCE_NUMBER),
+            RECEIVE_WINDOW_BYTES);
 
-public class TCP_Receiver extends TCP_Receiver_ADT {
-	
-	private TCP_PACKET ackPacket;
-	private UDT_Timer timer = new UDT_Timer();
-	private ReceiverWindow window = new ReceiverWindow(16);
-	private int lastAckSeq = 0;
-	
-	/*构造函数*/
-	public TCP_Receiver() {
-		super();	//调用超类构造函数
-		super.initTCP_Receiver(this);	//初始化TCP接收端
-	}
+    public TCP_Receiver() {
+        super();
+        super.initTCP_Receiver(this);
+    }
 
-	@Override
-	public void rdt_recv(TCP_PACKET recvPack) {
-		int dataLenth = recvPack.getTcpS().getData().length;
-		// checksum 错误：丢弃报文，不予 ACK
-		if (CheckSum.computeChkSum(recvPack) != recvPack.getTcpH().getTh_sum()) {
-			// 避免ACK风暴
-			System.out.println();
-			deliver_data();
-			return;
+    @Override
+    public void rdt_recv(TCP_PACKET packet) {
+        TcpSegment segment = packetCodec.decode(packet);
+        ReceiveResult result = receiverEngine.receive(segment);
 
-		}
+        if (result.deliveredBytes().length > 0) {
+            dataQueue.add(IntegerPayloadCodec.decode(result.deliveredBytes()));
+            deliver_data();
+        }
+        if (result.acknowledgmentRequired()) {
+            reply(packetCodec.encode(acknowledgmentFor(segment, result)));
+        }
+    }
 
-		// checksum 对：先尝试缓存
-		int bufferResult;
-		try {
-			bufferResult = window.bufferPacket(recvPack.clone());
-		} catch (CloneNotSupportedException e) {
-			throw new RuntimeException(e);
-		}
+    @Override
+    public void deliver_data() {
+        File output = new File("recvData.txt");
+        try (BufferedWriter writer =
+                new BufferedWriter(new FileWriter(output, true))) {
+            while (!dataQueue.isEmpty()) {
+                int[] data = dataQueue.poll();
+                for (int value : data) {
+                    writer.write(Integer.toString(value));
+                    writer.newLine();
+                }
+            }
+        } catch (IOException failure) {
+            throw new IllegalStateException("failed to deliver received data", failure);
+        }
+    }
 
-		// 如果是 base（按序到达），则连续交付并推进 base，然后做 500ms 累积确认
-		if (bufferResult == AckFlag.IS_BASE.ordinal()) {
-			TCP_PACKET p = window.getPacket();
-			while (p != null) {
-				dataQueue.add(p.getTcpS().getData());
-				tcpH.setTh_ack(p.getTcpH().getTh_seq());
-				ackPacket = new TCP_PACKET(tcpH, tcpS, recvPack.getSourceAddr());
-				tcpH.setTh_sum(CheckSum.computeChkSum(ackPacket));
-				ackPacket.setTcpH(tcpH);
+    @Override
+    public void reply(TCP_PACKET packet) {
+        packet.getTcpH().setTh_eflag((byte) 7);
+        client.send(packet);
+    }
 
-				p = window.getPacket();
-			}
+    private TcpSegment acknowledgmentFor(
+            TcpSegment received, ReceiveResult result) {
+        return TcpChecksum.apply(new TcpSegment(
+                ipv4(Constant.LocalAddr),
+                received.sourceAddress(),
+                localPort,
+                received.sourcePort(),
+                INITIAL_SEQUENCE_NUMBER,
+                result.acknowledgmentNumber().toLong(),
+                Set.of(TcpFlag.ACK),
+                result.advertisedWindow(),
+                0,
+                new byte[0]));
+    }
 
-			// 重新安排 500ms 的“累计确认”
-			if (timer != null) timer.cancel();
-			timer = new UDT_Timer();
-			TCP_PACKET delayedAck = ackPacket;
-			timer.schedule(new TimerTask() {
-				@Override
-				public void run() {
-					if (delayedAck != null) reply(delayedAck);
-				}
-			}, 500);
-
-			System.out.println();
-			deliver_data();
-			return;
-		} else {
-			// 不是 base，则立即发送 ACK（重复 ACK 或无序到达）
-			if (ackPacket != null) reply(ackPacket);
-		}	
-
-		System.out.println();
-		deliver_data();
-	}
-
-
-	@Override
-	//交付数据（将数据写入文件）；不需要修改
-	public void deliver_data() {
-		//检查dataQueue，将数据写入文件
-		File fw = new File("recvData.txt");
-		BufferedWriter writer;
-		
-		try {
-			writer = new BufferedWriter(new FileWriter(fw, true));
-			
-			//循环检查data队列中是否有新交付数据
-			while(!dataQueue.isEmpty()) {
-				int[] data = dataQueue.poll();
-				
-				//将数据写入文件
-				for(int i = 0; i < data.length; i++) {
-					writer.write(data[i] + "\n");
-				}
-				
-				writer.flush();		//清空输出缓存
-			}
-			writer.close();
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
-	}
-
-	@Override
-	//回复ACK报文段
-	public void reply(TCP_PACKET replyPack) {
-		//设置错误控制标志
-		tcpH.setTh_eflag((byte)7);	//eFlag=0，信道无错误
-				
-		//发送数据报
-		client.send(replyPack);
-	}
-	
+    private static Inet4Address ipv4(java.net.InetAddress address) {
+        if (!(address instanceof Inet4Address ipv4Address)) {
+            throw new IllegalStateException(
+                    "the teaching framework must run with an IPv4 local address");
+        }
+        return ipv4Address;
+    }
 }
