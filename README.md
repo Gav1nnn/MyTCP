@@ -46,6 +46,16 @@ mvn clean package
 The supplied framework dependency is stored at
 `lib/TCP_TestSys_Linux.jar`.
 
+Run the deterministic protocol tests with:
+
+```shell
+mvn test
+```
+
+The test environment uses a manual monotonic clock and an in-memory channel,
+so loss, corruption, delay, reordering, and duplication scenarios do not
+depend on wall-clock sleeps or random outcomes.
+
 ## Repository layout
 
 ```text
