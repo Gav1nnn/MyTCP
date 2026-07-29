@@ -1,7 +1,7 @@
 package com.ouc.tcp.core;
 
 /**
- * TCP control flags represented by the teaching framework.
+ * TCP control flags represented by the protocol core.
  */
 public enum TcpFlag {
     FIN(0x01),
