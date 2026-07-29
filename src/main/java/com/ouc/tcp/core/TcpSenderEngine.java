@@ -31,7 +31,12 @@ public final class TcpSenderEngine {
     private final Consumer<TcpSegment> retransmissionSink;
     private final RttEstimator rttEstimator;
     private final RetransmissionTimer retransmissionTimer;
+    private final RetransmissionTimer persistTimer;
     private final RenoCongestionController congestionController;
+    private final long initialCongestionWindow;
+
+    private Duration persistInterval;
+    private Long lastDataSentNanos;
 
     public TcpSenderEngine(
             SenderConfig config,
@@ -45,6 +50,8 @@ public final class TcpSenderEngine {
         this.rttEstimator = new RttEstimator();
         this.retransmissionTimer =
                 new RetransmissionTimer(Objects.requireNonNull(scheduler, "scheduler"));
+        this.persistTimer = new RetransmissionTimer(scheduler);
+        this.initialCongestionWindow = config.initialCongestionWindow();
         this.congestionController = new RenoCongestionController(
                 config.senderMaximumSegmentSize(),
                 config.initialCongestionWindow(),
@@ -60,8 +67,14 @@ public final class TcpSenderEngine {
      * both the congestion and receiver windows.
      */
     public synchronized List<TcpSegment> queueData(byte[] data) {
+        Objects.requireNonNull(data, "data");
+        if (data.length > 0) {
+            applyIdleRestartIfNeeded();
+        }
         pendingData.append(data);
-        return emitPermittedSegments();
+        List<TcpSegment> transmissions = emitPermittedSegments();
+        updatePersistTimer();
+        return transmissions;
     }
 
     public synchronized AckProcessingResult receiveAcknowledgment(TcpSegment segment) {
@@ -91,6 +104,8 @@ public final class TcpSenderEngine {
                 acknowledgment,
                 segment.advertisedWindow());
         boolean windowChanged = previousWindow != controlBlock.sendWindow();
+        boolean windowReopened =
+                previousWindow == 0 && controlBlock.sendWindow() > 0;
         List<TcpSegment> transmissions = new ArrayList<>();
         boolean congestionDuplicate =
                 disposition == AckDisposition.DUPLICATE_ACK
@@ -126,11 +141,17 @@ public final class TcpSenderEngine {
                 transmissions.add(
                         retransmissionQueue.retransmitEarliestFast(
                                 clock.nanoTime()));
+                lastDataSentNanos = clock.nanoTime();
             }
         } else {
             congestionController.onNonDuplicateAcknowledgment();
         }
 
+        if (windowReopened && retransmissionQueue.segmentCount() > 0) {
+            transmissions.add(
+                    retransmissionQueue.retransmitEarliestFast(clock.nanoTime()));
+            lastDataSentNanos = clock.nanoTime();
+        }
         if (duplicateAckAction == DuplicateAckAction.LIMITED_TRANSMIT) {
             List<TcpSegment> limitedTransmission = emitPermittedSegments(
                     config.senderMaximumSegmentSize(),
@@ -143,6 +164,7 @@ public final class TcpSenderEngine {
                     ? emitPermittedSegments(config.senderMaximumSegmentSize())
                     : emitPermittedSegments());
         }
+        updatePersistTimer();
         return ackResult(
                 disposition,
                 newlyAcknowledgedBytes,
@@ -212,6 +234,14 @@ public final class TcpSenderEngine {
         return retransmissionTimer.isRunning();
     }
 
+    public synchronized boolean persistTimerRunning() {
+        return persistTimer.isRunning();
+    }
+
+    public synchronized Optional<Duration> persistInterval() {
+        return Optional.ofNullable(persistInterval);
+    }
+
     private List<TcpSegment> emitPermittedSegments() {
         return emitPermittedSegments(Long.MAX_VALUE, 0);
     }
@@ -233,22 +263,14 @@ public final class TcpSenderEngine {
                             usableWindow(additionalCongestionWindow)),
                     Math.min(pendingData.size(), byteLimit - emittedBytes));
             byte[] payload = pendingData.take(payloadLength);
-            TcpSegment segment = TcpChecksum.apply(new TcpSegment(
-                    config.localAddress(),
-                    config.remoteAddress(),
-                    config.localPort(),
-                    config.remotePort(),
-                    controlBlock.sendNext().toLong(),
-                    config.acknowledgmentNumber().toLong(),
-                    Set.of(TcpFlag.ACK),
-                    config.localAdvertisedWindow(),
-                    0,
-                    payload));
+            TcpSegment segment =
+                    createDataSegment(controlBlock.sendNext(), payload);
             boolean startTimer = retransmissionQueue.segmentCount() == 0;
             retransmissionQueue.add(segment, clock.nanoTime());
             controlBlock.advanceSendNext(payloadLength);
             transmissions.add(segment);
             emittedBytes += payloadLength;
+            lastDataSentNanos = clock.nanoTime();
             if (startTimer) {
                 restartRetransmissionTimer();
             }
@@ -291,10 +313,89 @@ public final class TcpSenderEngine {
             retransmission =
                     retransmissionQueue.retransmitEarliestDueToTimeout(
                             clock.nanoTime());
+            lastDataSentNanos = clock.nanoTime();
             rttEstimator.backOff();
             restartRetransmissionTimer();
         }
         retransmissionSink.accept(retransmission);
+    }
+
+    private void updatePersistTimer() {
+        boolean persistCondition = controlBlock.sendWindow() == 0
+                && (pendingData.size() > 0
+                        || retransmissionQueue.segmentCount() > 0);
+        if (!persistCondition) {
+            boolean wasPersisting =
+                    persistTimer.isRunning() || persistInterval != null;
+            persistTimer.stop();
+            persistInterval = null;
+            if (wasPersisting
+                    && retransmissionQueue.segmentCount() > 0
+                    && !retransmissionTimer.isRunning()) {
+                restartRetransmissionTimer();
+            }
+            return;
+        }
+        retransmissionTimer.stop();
+        if (!persistTimer.isRunning()) {
+            if (persistInterval == null) {
+                persistInterval = rttEstimator.retransmissionTimeout();
+            }
+            persistTimer.startOrRestart(
+                    persistInterval, this::onPersistTimeout);
+        }
+    }
+
+    private void onPersistTimeout() {
+        TcpSegment probe;
+        synchronized (this) {
+            boolean persistCondition = controlBlock.sendWindow() == 0
+                    && (pendingData.size() > 0
+                            || retransmissionQueue.segmentCount() > 0);
+            if (!persistCondition) {
+                persistInterval = null;
+                return;
+            }
+            if (retransmissionQueue.segmentCount() > 0) {
+                probe = retransmissionQueue.retransmitEarliestFast(clock.nanoTime());
+            } else {
+                byte[] probePayload = pendingData.peek(
+                        Math.min(
+                                config.senderMaximumSegmentSize(),
+                                pendingData.size()));
+                probe = createDataSegment(controlBlock.sendNext(), probePayload);
+            }
+            lastDataSentNanos = clock.nanoTime();
+            persistInterval = doubledPersistInterval(persistInterval);
+            persistTimer.startOrRestart(
+                    persistInterval, this::onPersistTimeout);
+        }
+        retransmissionSink.accept(probe);
+    }
+
+    private void applyIdleRestartIfNeeded() {
+        if (lastDataSentNanos == null
+                || retransmissionQueue.segmentCount() > 0
+                || pendingData.size() > 0) {
+            return;
+        }
+        long idleNanos = clock.nanoTime() - lastDataSentNanos;
+        if (idleNanos > rttEstimator.retransmissionTimeout().toNanos()) {
+            congestionController.onIdleRestart(initialCongestionWindow);
+            synchronizeCongestionWindow();
+        }
+    }
+
+    private Duration doubledPersistInterval(Duration interval) {
+        Duration doubled;
+        try {
+            doubled = interval.multipliedBy(2);
+        } catch (ArithmeticException overflow) {
+            return RttEstimator.DEFAULT_MAXIMUM_RTO;
+        }
+        return doubled.compareTo(RttEstimator.DEFAULT_MAXIMUM_RTO) > 0
+                ? RttEstimator.DEFAULT_MAXIMUM_RTO
+                : doubled;
     }
 
     private void synchronizeCongestionWindow() {
@@ -309,6 +410,21 @@ public final class TcpSenderEngine {
                 && !segment.hasFlag(TcpFlag.SYN)
                 && !segment.hasFlag(TcpFlag.FIN)
                 && segment.advertisedWindow() == previousWindow;
+    }
+
+    private TcpSegment createDataSegment(
+            SequenceNumber32 sequenceNumber, byte[] payload) {
+        return TcpChecksum.apply(new TcpSegment(
+                config.localAddress(),
+                config.remoteAddress(),
+                config.localPort(),
+                config.remotePort(),
+                sequenceNumber.toLong(),
+                config.acknowledgmentNumber().toLong(),
+                Set.of(TcpFlag.ACK),
+                config.localAdvertisedWindow(),
+                0,
+                payload));
     }
 
     private AckDisposition classifyAcknowledgment(SequenceNumber32 acknowledgment) {

@@ -37,4 +37,15 @@ class PendingDataBufferTest {
         assertArrayEquals(new byte[0], buffer.take(0));
         assertEquals(0, buffer.size());
     }
+
+    @Test
+    void peekDoesNotConsumeQueuedBytes() {
+        PendingDataBuffer buffer = new PendingDataBuffer();
+        buffer.append(new byte[] {1, 2});
+        buffer.append(new byte[] {3, 4});
+
+        assertArrayEquals(new byte[] {1, 2, 3}, buffer.peek(3));
+        assertEquals(4, buffer.size());
+        assertArrayEquals(new byte[] {1, 2, 3, 4}, buffer.take(4));
+    }
 }

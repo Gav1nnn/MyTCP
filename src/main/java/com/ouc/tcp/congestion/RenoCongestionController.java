@@ -146,6 +146,17 @@ public final class RenoCongestionController {
                 : CongestionPhase.CONGESTION_AVOIDANCE;
     }
 
+    public void onIdleRestart(long initialWindow) {
+        validateWindow(initialWindow, "initialWindow");
+        congestionWindow = Math.min(congestionWindow, initialWindow);
+        congestionAvoidanceAckedBytes = 0;
+        limitedTransmitBytes = 0;
+        duplicateAckCount = 0;
+        phase = congestionWindow < slowStartThreshold
+                ? CongestionPhase.SLOW_START
+                : CongestionPhase.CONGESTION_AVOIDANCE;
+    }
+
     public long congestionWindow() {
         return congestionWindow;
     }
