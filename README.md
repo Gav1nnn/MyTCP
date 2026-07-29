@@ -10,6 +10,10 @@ against the following standards:
   fast recovery
 - RFC 6298: RTT measurement and retransmission timeout management
 
+The scoped implementation is complete and connected to the framework entry
+points. Protocol behavior is covered by deterministic unit and end-to-end
+fault-injection tests.
+
 ## Scope
 
 The project focuses on reliable, ordered data delivery over the framework's
@@ -71,6 +75,11 @@ can clock limited transmissions without increasing `cwnd`; the third triggers
 fast retransmit and fast recovery. Retransmission timeout loss returns `cwnd`
 to one SMSS and applies exponential RTO backoff independently.
 
+When the peer advertises a zero window, the sender switches from the
+retransmission timer to an exponentially backed-off persist timer. Probes do
+not consume pending application data or advance `SND.NXT`. A long-idle sender
+reduces its congestion window to the restart window before sending again.
+
 ## Build
 
 JDK 17 and Maven are required.
@@ -92,10 +101,38 @@ The test environment uses a manual monotonic clock and an in-memory channel,
 so loss, corruption, delay, reordering, and duplication scenarios do not
 depend on wall-clock sleeps or random outcomes.
 
+Run the complete teaching experiment from the repository root with:
+
+```shell
+mvn compile
+java -cp "target/classes:lib/TCP_TestSys_Linux.jar" com.ouc.tcp.test.TestRun
+```
+
+The framework prompts for Enter before reading `ENCDA.tcp`. Received
+application integers are written to `recvData.txt`. The supplied listener
+threads remain active after the transfer, so stop the experiment with
+`Ctrl-C` after the final acknowledgment has arrived.
+
+After `mvn package`, the same experiment can be started with:
+
+```shell
+java -jar target/tcp-test-1-1.0-SNAPSHOT.jar
+```
+
+## Design documentation
+
+- [`docs/architecture.md`](docs/architecture.md): module boundaries and data
+  flow
+- [`docs/protocol-behavior.md`](docs/protocol-behavior.md): sender and receiver
+  state transitions, invariants, and supported RFC behavior
+- [`docs/verification.md`](docs/verification.md): deterministic test strategy
+  and experiment checklist
+
 ## Repository layout
 
 ```text
 src/main/java/    implementation
 src/test/java/    automated tests
+docs/             architecture and protocol notes
 lib/              supplied teaching framework
 ```

@@ -90,6 +90,22 @@ class TcpEndToEndTest {
     }
 
     @Test
+    void duplicatedSegmentIsAcknowledgedButNeverDeliveredTwice()
+            throws Exception {
+        Fixture fixture = new Fixture(1);
+        byte[] input = bytes(40);
+        fixture.forward.enqueue(TransmissionBehaviors.duplicate(
+                Duration.ZERO, Duration.ofMillis(10)));
+
+        fixture.send(input);
+        fixture.scheduler.runReady();
+        fixture.scheduler.advanceBy(Duration.ofMillis(10));
+
+        assertArrayEquals(input, fixture.delivered.toByteArray());
+        assertEquals(0, fixture.sender.flightSize());
+    }
+
+    @Test
     void lostAcknowledgmentsAreRecoveredByRetransmissionTimeout()
             throws Exception {
         Fixture fixture = new Fixture(1);
