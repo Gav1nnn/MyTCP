@@ -7,6 +7,7 @@ import com.ouc.tcp.core.TcpSegment;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -22,6 +23,7 @@ public final class TcpConnectionLifecycle {
     private TcpState state = TcpState.CLOSED;
     private SequenceNumber32 sendNext;
     private SequenceNumber32 receiveNext;
+    private TcpSegment outstandingControl;
 
     public TcpConnectionLifecycle(ConnectionConfig config) {
         this.config = Objects.requireNonNull(config, "config");
@@ -39,6 +41,7 @@ public final class TcpConnectionLifecycle {
         requireState(TcpState.CLOSED);
         TcpState previous = state;
         TcpSegment syn = control(sendNext, SequenceNumber32.of(0), Set.of(TcpFlag.SYN));
+        outstandingControl = syn;
         sendNext = sendNext.add(1);
         state = TcpState.SYN_SENT;
         return result(true, previous, List.of(syn));
@@ -52,6 +55,7 @@ public final class TcpConnectionLifecycle {
         }
         if (segment.hasFlag(TcpFlag.RST)) {
             state = TcpState.CLOSED;
+            outstandingControl = null;
             return result(true, previous, List.of());
         }
 
@@ -82,6 +86,7 @@ public final class TcpConnectionLifecycle {
         TcpState previous = state;
         TcpSegment fin = control(
                 sendNext, receiveNext, Set.of(TcpFlag.FIN, TcpFlag.ACK));
+        outstandingControl = fin;
         sendNext = sendNext.add(1);
         state = previous == TcpState.ESTABLISHED
                 ? TcpState.FIN_WAIT_1
@@ -106,6 +111,7 @@ public final class TcpConnectionLifecycle {
         requireState(TcpState.TIME_WAIT);
         TcpState previous = state;
         state = TcpState.CLOSED;
+        outstandingControl = null;
         return result(true, previous, List.of());
     }
 
@@ -124,6 +130,10 @@ public final class TcpConnectionLifecycle {
         return receiveNext;
     }
 
+    public synchronized Optional<TcpSegment> retransmissionCandidate() {
+        return Optional.ofNullable(outstandingControl);
+    }
+
     private LifecycleResult receiveInListen(TcpSegment segment, TcpState previous) {
         if (!segment.hasFlag(TcpFlag.SYN) || segment.hasFlag(TcpFlag.ACK)) {
             return result(false, previous, List.of());
@@ -131,6 +141,7 @@ public final class TcpConnectionLifecycle {
         receiveNext = SequenceNumber32.of(segment.sequenceNumber()).add(1);
         TcpSegment synAck = control(
                 sendNext, receiveNext, Set.of(TcpFlag.SYN, TcpFlag.ACK));
+        outstandingControl = synAck;
         sendNext = sendNext.add(1);
         state = TcpState.SYN_RECEIVED;
         return result(true, previous, List.of(synAck));
@@ -143,6 +154,7 @@ public final class TcpConnectionLifecycle {
             return result(false, previous, List.of());
         }
         receiveNext = SequenceNumber32.of(segment.sequenceNumber()).add(1);
+        outstandingControl = null;
         state = TcpState.ESTABLISHED;
         return result(true, previous, List.of(
                 control(sendNext, receiveNext, Set.of(TcpFlag.ACK))));
@@ -150,15 +162,23 @@ public final class TcpConnectionLifecycle {
 
     private LifecycleResult receiveInSynReceived(
             TcpSegment segment, TcpState previous) {
+        if (isDuplicateSyn(segment)) {
+            return result(true, previous, List.of(requireOutstandingControl()));
+        }
         if (!acceptableAck(segment) || segment.sequenceNumber() != receiveNext.toLong()) {
             return result(false, previous, List.of());
         }
+        outstandingControl = null;
         state = TcpState.ESTABLISHED;
         return result(true, previous, List.of());
     }
 
     private LifecycleResult receiveInEstablished(
             TcpSegment segment, TcpState previous) {
+        if (isDuplicateSynAck(segment)) {
+            return result(true, previous, List.of(
+                    control(sendNext, receiveNext, Set.of(TcpFlag.ACK))));
+        }
         if (!segment.hasFlag(TcpFlag.FIN)
                 || segment.sequenceNumber() != receiveNext.toLong()) {
             return result(false, previous, List.of());
@@ -187,6 +207,9 @@ public final class TcpConnectionLifecycle {
         } else {
             state = TcpState.FIN_WAIT_2;
         }
+        if (acknowledgesFin) {
+            outstandingControl = null;
+        }
         return result(true, previous, transmissions);
     }
 
@@ -207,6 +230,7 @@ public final class TcpConnectionLifecycle {
         if (!acceptableAck(segment)) {
             return result(false, previous, List.of());
         }
+        outstandingControl = null;
         state = TcpState.TIME_WAIT;
         return result(true, previous, List.of());
     }
@@ -216,6 +240,7 @@ public final class TcpConnectionLifecycle {
         if (state != TcpState.LAST_ACK || !acceptableAck(segment)) {
             return result(false, previous, List.of());
         }
+        outstandingControl = null;
         state = TcpState.CLOSED;
         return result(true, previous, List.of());
     }
@@ -232,6 +257,30 @@ public final class TcpConnectionLifecycle {
     private boolean acceptableAck(TcpSegment segment) {
         return segment.hasFlag(TcpFlag.ACK)
                 && segment.acknowledgmentNumber() == sendNext.toLong();
+    }
+
+    private boolean isDuplicateSyn(TcpSegment segment) {
+        return segment.hasFlag(TcpFlag.SYN)
+                && !segment.hasFlag(TcpFlag.ACK)
+                && SequenceNumber32.of(segment.sequenceNumber())
+                        .add(1)
+                        .equals(receiveNext);
+    }
+
+    private boolean isDuplicateSynAck(TcpSegment segment) {
+        return segment.hasFlag(TcpFlag.SYN)
+                && segment.hasFlag(TcpFlag.ACK)
+                && SequenceNumber32.of(segment.sequenceNumber())
+                        .add(1)
+                        .equals(receiveNext);
+    }
+
+    private TcpSegment requireOutstandingControl() {
+        if (outstandingControl == null) {
+            throw new IllegalStateException(
+                    "state " + state + " has no retransmittable control segment");
+        }
+        return outstandingControl;
     }
 
     private TcpSegment control(

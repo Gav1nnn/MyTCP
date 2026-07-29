@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -44,6 +45,31 @@ class TcpConnectionLifecycleTest {
         assertTrue(established.accepted());
         assertEquals(TcpState.ESTABLISHED, peers.server.state());
         assertTrue(established.transmissions().isEmpty());
+        assertTrue(peers.client.retransmissionCandidate().isEmpty());
+        assertTrue(peers.server.retransmissionCandidate().isEmpty());
+    }
+
+    @Test
+    void retainsHandshakeControlUntilAcknowledged() throws Exception {
+        Peers peers = peers();
+
+        TcpSegment syn = only(peers.client.connect());
+        assertEquals(Optional.of(syn), peers.client.retransmissionCandidate());
+
+        TcpSegment synAck = only(peers.server.receive(syn));
+        assertTrue(peers.client.retransmissionCandidate().isPresent());
+        assertEquals(Optional.of(synAck), peers.server.retransmissionCandidate());
+
+        TcpSegment repeatedSynAck = only(peers.server.receive(syn));
+        assertEquals(synAck, repeatedSynAck);
+
+        TcpSegment finalAck = only(peers.client.receive(synAck));
+        assertTrue(peers.client.retransmissionCandidate().isEmpty());
+        peers.server.receive(finalAck);
+        assertTrue(peers.server.retransmissionCandidate().isEmpty());
+
+        TcpSegment repeatedFinalAck = only(peers.client.receive(synAck));
+        assertEquals(finalAck, repeatedFinalAck);
     }
 
     @Test
@@ -60,6 +86,9 @@ class TcpConnectionLifecycleTest {
 
         TcpSegment clientFin = only(peers.client.close(
                 clientSendNext, clientReceiveNext));
+        assertEquals(
+                Optional.of(clientFin),
+                peers.client.retransmissionCandidate());
         LifecycleResult passiveFin = peers.server.receive(clientFin);
         TcpSegment finAck = only(passiveFin);
         assertEquals(TcpState.FIN_WAIT_1, peers.client.state());
@@ -68,15 +97,20 @@ class TcpConnectionLifecycleTest {
 
         peers.client.receive(finAck);
         assertEquals(TcpState.FIN_WAIT_2, peers.client.state());
+        assertTrue(peers.client.retransmissionCandidate().isEmpty());
 
         TcpSegment serverFin = only(peers.server.close(
                 serverSendNext, serverReceiveNext.add(1)));
+        assertEquals(
+                Optional.of(serverFin),
+                peers.server.retransmissionCandidate());
         TcpSegment lastAck = only(peers.client.receive(serverFin));
         assertEquals(TcpState.LAST_ACK, peers.server.state());
         assertEquals(TcpState.TIME_WAIT, peers.client.state());
 
         peers.server.receive(lastAck);
         assertEquals(TcpState.CLOSED, peers.server.state());
+        assertTrue(peers.server.retransmissionCandidate().isEmpty());
         peers.client.expireTimeWait();
         assertEquals(TcpState.CLOSED, peers.client.state());
     }
