@@ -77,8 +77,13 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
     public synchronized EndpointPollResult poll(Duration timeout)
             throws IOException {
         checkAsynchronousFailure();
-        TcpSegment segment = transport.receive(timeout);
+        return process(transport.receive(timeout));
+    }
 
+    public synchronized EndpointPollResult process(TcpSegment segment)
+            throws IOException {
+        checkAsynchronousFailure();
+        Objects.requireNonNull(segment, "segment");
         byte[] delivered = new byte[0];
         Optional<ReceiveDisposition> receiveDisposition = Optional.empty();
         if (segment.payloadLength() > 0) {
