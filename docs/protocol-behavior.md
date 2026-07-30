@@ -1,58 +1,53 @@
-# Protocol behavior
+# 协议行为
 
-## Sequence space and acknowledgment
+## 序列号空间与确认
 
-All data sequence numbers count bytes. Arithmetic is modulo `2^32`, and
-ordering is used only within the unambiguous half of the sequence space.
-SYN and FIN each consume one sequence number.
+所有数据序列号都以字节为单位。序列号按照 `2^32` 取模运算，只有在无歧义的
+半序列号空间内才进行先后关系比较。SYN 和 FIN 各消耗一个序列号。
 
-The receive path delivers only the contiguous prefix beginning at `RCV.NXT`.
-Every reliability ACK contains:
+接收路径只会交付从 `RCV.NXT` 开始的连续字节前缀。所有用于保证可靠性的 ACK
+都满足：
 
 ```text
 SEG.ACK = RCV.NXT
 ```
 
-An ACK of `X` therefore confirms every byte before `X`. Out-of-order and
-duplicate data repeat the same ACK, while filling a gap advances it across all
-newly contiguous buffered bytes.
+因此，ACK 为 `X` 表示确认了 `X` 之前的所有字节。乱序数据和重复数据会重复
+当前 ACK；当缺口被填补后，ACK 会一次越过所有新形成的连续缓存字节。
 
-## Input validation
+## 输入验证
 
-Before protocol state changes, the implementation checks:
+在改变协议状态之前，实现会依次检查：
 
-1. connection four-tuple
-2. IPv4 TCP checksum
-3. segment sequence-space acceptability against `RCV.NXT` and `RCV.WND`
-4. ACK acceptability against `SND.UNA` and `SND.NXT`
+1. 连接四元组
+2. IPv4 TCP 校验和
+3. 报文段序列号相对 `RCV.NXT` 和 `RCV.WND` 的可接受性
+4. ACK 相对 `SND.UNA` 和 `SND.NXT` 的可接受性
 
-Checksum failures and wrong connections are discarded. An unacceptable
-non-RST segment receives the current ACK. A future ACK cannot release unsent
-data. RST handling uses an exact `RCV.NXT` match and a challenge ACK for an
-in-window non-exact sequence.
+校验和错误和连接不匹配的报文会被丢弃。不可接受的非 RST 报文会得到包含当前
+确认号的 ACK。未来 ACK 不能释放尚未发送的数据。RST 必须精确匹配
+`RCV.NXT`；处于接收窗口内但不精确匹配的 RST 会触发 Challenge ACK。
 
-## Flow control
+## 流量控制
 
-Normal data may be sent only while:
+只有满足以下条件时才能发送正常数据：
 
 ```text
 FlightSize < min(cwnd, SND.WND)
 ```
 
-Window updates follow `SND.WL1` and `SND.WL2`, preventing an older segment
-from overwriting a newer peer-window value.
+窗口更新遵循 `SND.WL1` 和 `SND.WL2`，防止旧报文段覆盖更新的对端窗口。
 
-When `SND.WND` is zero, normal transmission and the data RTO timer stop. A
-persist probe is sent after one current RTO and then at exponentially backed
-off intervals up to 60 seconds. A probe does not consume pending bytes,
-advance `SND.NXT`, or reduce `cwnd`.
+当 `SND.WND` 为零时，正常数据发送和数据 RTO 定时器都会停止。发送端会在一个
+当前 RTO 后发送 Persist 探测，之后按指数退避增加间隔，最大为 60 秒。
+Persist 探测不会消耗待发送字节、推进 `SND.NXT` 或减小 `cwnd`。
 
-## RTO behavior
+## RTO 行为
 
-Before an RTT measurement, RTO is one second. If this endpoint retransmitted
-its SYN or SYN-ACK, the data-phase RTO starts at three seconds.
+尚未获得 RTT 测量值时，RTO 初始为一秒。如果本端重传过 SYN 或 SYN-ACK，
+数据阶段的 RTO 会从三秒开始。
 
-For an RTT sample `R`:
+对于一次 RTT 样本 `R`：
 
 ```text
 RTTVAR <- 3/4 * RTTVAR + 1/4 * |SRTT - R|
@@ -60,41 +55,36 @@ SRTT   <- 7/8 * SRTT   + 1/8 * R
 RTO    <- SRTT + max(G, 4 * RTTVAR)
 ```
 
-RTO is clamped to the range 1 through 60 seconds. A timeout retransmits the
-earliest unacknowledged segment, doubles RTO, sets `cwnd` to one SMSS, and
-restarts slow start. Karn's algorithm excludes retransmitted data from RTT
-measurement.
+RTO 被限制在 1 到 60 秒。超时后只重传最早的未确认报文段，将 RTO 加倍，
+把 `cwnd` 设为一个 SMSS，并重新进入慢启动。Karn 算法会排除发生过重传的
+数据，不使用其 ACK 计算 RTT。
 
-## Reno behavior
+## Reno 行为
 
-For the default 1200-byte SMSS, initial `cwnd` is three segments. A
-retransmitted handshake control reduces it to one segment.
+默认 SMSS 为 1200 字节，初始 `cwnd` 为三个报文段。如果握手控制报文发生过
+重传，初始窗口会进一步降低为一个报文段。
 
-- slow start adds at most one SMSS for each ACK that confirms new data
-- congestion avoidance adds approximately one SMSS per RTT using byte counting
-- the first two qualifying duplicate ACKs may use Limited Transmit
-- the third duplicate ACK sets
-  `ssthresh = max(FlightSize / 2, 2 * SMSS)` and fast retransmits the oldest
-  outstanding segment
-- fast recovery uses `cwnd = ssthresh + 3 * SMSS`, inflates it for further
-  duplicate ACKs, and exits to `ssthresh` on the next new ACK
-- an idle sender restarts with `min(IW, cwnd)`
+- 慢启动中，每个确认新数据的 ACK 最多使 `cwnd` 增加一个 SMSS
+- 拥塞避免使用字节计数，每个 RTT 大约增加一个 SMSS
+- 前两个符合条件的重复 ACK 可以使用 Limited Transmit
+- 第三个重复 ACK 会设置
+  `ssthresh = max(FlightSize / 2, 2 * SMSS)`，并快速重传最早的未确认报文段
+- 快速恢复使用 `cwnd = ssthresh + 3 * SMSS`，后续重复 ACK 会继续膨胀
+  `cwnd`；收到新的 ACK 后退出快速恢复并把 `cwnd` 恢复为 `ssthresh`
+- 空闲发送端使用 `min(IW, cwnd)` 重新开始发送
 
-This is basic Reno rather than SACK or NewReno multi-loss recovery.
+当前实现采用基础 Reno，不实现 SACK 或 NewReno 多丢包恢复。
 
-## Connection lifecycle
+## 连接生命周期
 
-The active peer sends SYN and enters SYN-SENT. The passive peer transitions
-from LISTEN to SYN-RECEIVED and replies with SYN+ACK. A valid final ACK
-establishes the connection. Duplicate SYN and SYN+ACK controls cause the
-corresponding control response to be retransmitted.
+主动端发送 SYN 并进入 SYN-SENT。被动端从 LISTEN 进入 SYN-RECEIVED，并回复
+SYN+ACK。收到合法的最终 ACK 后连接进入 ESTABLISHED。重复 SYN 和 SYN+ACK
+会触发对应控制报文的重传。
 
-Close follows FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, and
-TIME-WAIT as appropriate. FIN is retransmitted until acknowledged. A FIN
-following payload is interpreted at `SEG.SEQ + SEG.LEN`, and duplicate FINs
-are acknowledged throughout closing. TIME-WAIT lasts exactly twice the
-configured MSL.
+关闭过程根据双方行为经过 FIN-WAIT-1、FIN-WAIT-2、CLOSE-WAIT、CLOSING、
+LAST-ACK 和 TIME-WAIT。FIN 在确认前会被重传。携带数据的 FIN 位于
+`SEG.SEQ + SEG.LEN`，关闭过程中的重复 FIN 会被重新确认。TIME-WAIT 精确持续
+两倍于所配置的 MSL。
 
-The loopback CLI uses a 250 ms MSL because its UDP envelope does not have an
-Internet path on which old datagrams may remain for minutes. The multiplier
-and restart behavior remain `2 * MSL`.
+回环 CLI 使用 250 ms 的 MSL，因为它的 UDP 外层不存在可能让旧数据报滞留数
+分钟的互联网路径；`2 * MSL` 倍数和重复 FIN 重新计时行为保持不变。
