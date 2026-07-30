@@ -1,64 +1,102 @@
 # Verification
 
-## Automated checks
-
-Run all tests without network access:
-
-```shell
-mvn -o clean test
-```
-
-The suite uses a manual monotonic clock. Advancing virtual time executes due
-callbacks synchronously, so RTO, persist, delay, and reordering tests contain
-no sleeps.
-
-Coverage is organized by protocol responsibility:
-
-- adapter: integer encoding and framework packet round trips
-- checksum: pseudo-header, odd payload, corruption, and malformed length
-- sequence arithmetic: wraparound and half-range boundaries
-- receive path: ordering, overlap, duplicates, window trimming, and tuple
-  validation
-- send path: segmentation, cumulative and partial ACKs, flow control, and
-  ordered window updates
-- timing: RTT estimation, Karn filtering, timer lifecycle, timeout backoff,
-  persist probing, and idle restart
-- congestion: slow start, byte-counted avoidance, Limited Transmit, fast
-  retransmit/recovery, and timeout response
-- integration: complete sender/channel/receiver/ACK loops under loss,
-  corruption, delay, duplication, ACK loss, and sequence wraparound
-
-## Teaching-framework experiment
+## Automated suite
 
 From the repository root:
 
 ```shell
-mvn compile
-java -cp "target/classes:lib/TCP_TestSys_Linux.jar" com.ouc.tcp.test.TestRun
+mvn clean test
 ```
 
-Alternatively, run `mvn package` and start
-`target/tcp-test-1-1.0-SNAPSHOT.jar` with `java -jar`.
+The suite covers:
 
-Before running:
+- wire header and checksum vectors
+- sequence-number wraparound
+- receive-window acceptability
+- cumulative and partial acknowledgments
+- out-of-order reassembly, overlap, duplication, and corruption
+- ordered peer-window updates and zero-window persist
+- Reno slow start, avoidance, fast retransmit, recovery, timeout, and idle
+  restart
+- RFC 6298 estimator, Karn filtering, timer lifecycle, and backoff
+- handshake retransmission and failure limits
+- FIN loss, duplicate FIN, TIME-WAIT, and RST validation
+- real UDP endpoint and full session transfer
+- CLI transfer under deterministic loss, corruption, duplication, and
+  reordering
 
-1. Confirm `Config.ini` ports are free.
-2. Keep `ENCDA.tcp` in the repository root.
-3. Remove an old `recvData.txt` if comparing output manually; the framework
-   receiver normally truncates it during initialization.
-4. Press Enter when the sender prompt appears.
+## Package verification
 
-After completion, compare the decrypted integer sequence represented by
-`ENCDA.tcp` with `recvData.txt`. Framework packet events and injected faults
-are also written to `Log.txt`. The supplied server and listener threads are
-long-lived; stop them with `Ctrl-C` after the transfer is complete.
+```shell
+mvn package
+unzip -p target/mytcp-1.0-SNAPSHOT.jar META-INF/MANIFEST.MF
+```
 
-## Final repository checks
+The manifest must contain:
+
+```text
+Main-Class: com.ouc.tcp.cli.TcpCli
+```
+
+## Normal two-process verification
+
+Prepare a binary input:
+
+```shell
+dd if=/dev/urandom of=input.bin bs=1024 count=64
+```
+
+Terminal A:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar \
+  server 19002 19001 received.bin \
+  --trace server.trace
+```
+
+Terminal B:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar \
+  client 19001 19002 input.bin \
+  --trace client.trace
+```
+
+Verify:
+
+```shell
+cmp input.bin received.bin
+shasum -a 256 input.bin received.bin
+```
+
+## Fault-recovery verification
+
+Repeat the server command, then run:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar \
+  client 19001 19002 input.bin \
+  --trace client-fault.trace \
+  --fault "3=drop,4=duplicate,5=reorder,9=corrupt"
+```
+
+The transfer must finish with the same byte count and hash. Inspect:
+
+```shell
+rg "event=fault|event=sender|event=state" client-fault.trace
+```
+
+Expected evidence includes all four fault actions, repeated ACK numbers while
+the first data gap exists, a later `SND.UNA` jump after recovery, and the
+closing state transitions.
+
+## Repository checks
 
 ```shell
 git diff --check
-git status --short
+git status --short --branch
+rg "TCP_TestSys|com\\.ouc\\.tcp\\.test" pom.xml src
 ```
 
-The first command must print nothing. The second must be empty after the final
-commit.
+The first and third commands must produce no output. After the final commit,
+the worktree must be clean and synchronized with `origin/rfc-tcp-core`.

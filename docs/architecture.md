@@ -1,72 +1,81 @@
 # Architecture
 
-The project separates TCP protocol decisions from the OUC teaching framework.
-The framework is treated as an unreliable packet transport and does not own
-TCP state.
+MyTCP keeps protocol decisions independent from the UDP tunnel and CLI.
 
 ```text
-OUC application int[]
-        |
-        v
-IntegerPayloadCodec
-        |
-        v
-TcpSenderEngine ----> FrameworkPacketCodec ----> OUC unreliable channel
-        ^                                               |
-        |                                               v
-ACK handling <---- FrameworkPacketCodec <---- TcpReceiverEngine
-                                                    |
-                                                    v
-                                            ordered application bytes
+file bytes
+    |
+    v
+TcpSession
+    |
+    +--> TcpConnectionLifecycle  handshake, close, RST, TIME-WAIT
+    |
+    +--> StandaloneTcpEndpoint
+            |
+            +--> TcpSenderEngine    cumulative ACK, flow control, Reno, RTO
+            |
+            +--> TcpReceiverEngine  window checks, reassembly, ordered delivery
+    |
+    v
+SegmentTransport
+    |
+    +--> optional FaultInjectingTransport
+    |
+    +--> optional TracingSegmentTransport
+    |
+    v
+UdpSegmentTransport --> TcpWireCodec --> UDP socket
 ```
 
-## Core
+## Connection layer
 
-`com.ouc.tcp.core` contains immutable segments and the established-state
-sender and receiver engines. It owns the TCP control variables:
+`TcpConnectionLifecycle` owns the RFC connection states and the SYN/FIN
+sequence-space consumption. `TcpHandshakeRunner` drives active or passive
+open with bounded, exponentially backed-off control retransmission.
+`TcpSession` coordinates the connection state machine with the established
+sender and receiver engines.
 
-- sender: `SND.UNA`, `SND.NXT`, `SND.WND`, `SND.WL1`, and `SND.WL2`
-- receiver: `RCV.NXT` and `RCV.WND`
+FIN remains a retransmission candidate until acknowledged. Active close enters
+TIME-WAIT for twice the configured maximum segment lifetime; another accepted
+FIN restarts that timer.
 
-All public engine methods are synchronized. Timer callbacks acquire the same
-engine monitor before changing protocol state, but invoke the packet sink
-after releasing it to avoid re-entrant network callbacks.
+## Data layer
 
-## Buffers
+`TcpSenderEngine` owns:
 
-`PendingDataBuffer` contains application bytes that have not entered sequence
-space. `RetransmissionQueue` contains sent bytes until a cumulative
-acknowledgment covers them. `ReassemblyQueue` contains accepted out-of-order
-receive bytes until the gap at `RCV.NXT` is filled.
+- `SND.UNA` and `SND.NXT`
+- the peer window and ordered window-update markers
+- pending application data and the retransmission queue
+- Reno state and the RTO/persist timers
 
-The distinction is important: queueing application data does not advance
-`SND.NXT`; only emitting a normal data segment does. A zero-window probe peeks
-at pending bytes and therefore also leaves `SND.NXT` unchanged.
+`TcpReceiverEngine` owns `RCV.NXT`, receive-window validation, and the
+out-of-order reassembly queue. It exposes the current receive state to the
+sender so every new or retransmitted data segment carries the latest
+cumulative ACK and advertised window.
 
-## Congestion and timers
+## Wire and tunnel layer
 
-`RenoCongestionController` owns `cwnd`, `ssthresh`, duplicate-ACK counting,
-and the slow-start, congestion-avoidance, and fast-recovery phases.
+`TcpWireCodec` encodes the fixed RFC TCP header. IP addresses remain outside
+the encoded TCP segment because the UDP envelope supplies them; they are still
+included in the IPv4 pseudo-header checksum.
 
-`RttEstimator` owns `SRTT`, `RTTVAR`, and the backed-off RTO.
-`RetransmissionTimer` provides a generation-protected one-shot timer.
-The sender uses independent instances for retransmission and zero-window
-persist timing.
+`UdpSegmentTransport` requires the logical TCP ports and addresses to match
+the UDP envelope. This makes the tunnel explicit and prevents a caller from
+silently changing a segment's source identity.
 
-Time and scheduling are injected through `Clock` and `Scheduler`. Production
-uses `System.nanoTime()` and `ExecutorScheduler`; tests use a manual clock and
-deterministic scheduler.
+## Concurrency
 
-## Framework boundary
+Protocol engines synchronize state-changing operations. Data, control,
+persist, RTO, and TIME-WAIT timers run on single-threaded schedulers.
+Timer callbacks perform state changes under the relevant monitor and send
+outside the engine lock where re-entrant transport callbacks could occur.
 
-Only the classes under `com.ouc.tcp.test` extend the supplied framework:
+## Observability and fault injection
 
-- `TCP_Sender` converts application integers to bytes and delegates to the
-  sender engine.
-- `TCP_Receiver` delegates incoming segments to the receiver engine and writes
-  delivered integers to the framework output file.
-- `TestRun` starts the supplied experiment.
+`ProtocolTrace` is an optional observation boundary. It records segment
+attempts, state transitions, sender snapshots, and injected faults without
+being used to make protocol decisions.
 
-`FrameworkPacketCodec` is the only place that understands mutable
-`TCP_PACKET`, signed Java header fields, and the framework's `int[]` payload
-format.
+`FaultInjectingTransport` consumes a deterministic plan by outbound
+transmission number. This keeps loss, corruption, duplication, and reordering
+repeatable across verification runs.

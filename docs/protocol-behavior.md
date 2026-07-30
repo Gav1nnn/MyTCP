@@ -1,95 +1,100 @@
 # Protocol behavior
 
-## Sequence space and checksums
+## Sequence space and acknowledgment
 
-Sequence and acknowledgment numbers use serial-number arithmetic modulo
-2^32. Comparisons are valid only within the unambiguous half-range. Application
-integers are encoded as four network-order bytes, so all sequence variables
-count bytes.
+All data sequence numbers count bytes. Arithmetic is modulo `2^32`, and
+ordering is used only within the unambiguous half of the sequence space.
+SYN and FIN each consume one sequence number.
 
-Every segment carries a 16-bit one's-complement TCP checksum including the
-IPv4 pseudo-header. A corrupted or malformed segment is discarded before it
-can change protocol state.
-
-## Receive path
-
-The configured connection four-tuple is checked before data processing.
-Acceptable bytes are trimmed to the current receive window, overlap is
-deduplicated, and out-of-order data is retained. Only the contiguous prefix
-beginning at `RCV.NXT` is delivered.
-
-Every valid data arrival that affects reliability produces a cumulative
-acknowledgment with:
+The receive path delivers only the contiguous prefix beginning at `RCV.NXT`.
+Every reliability ACK contains:
 
 ```text
 SEG.ACK = RCV.NXT
 ```
 
-Out-of-order, duplicate, and out-of-window segments therefore repeat the
-current acknowledgment and can drive sender loss recovery. Checksum failures
-are discarded silently.
+An ACK of `X` therefore confirms every byte before `X`. Out-of-order and
+duplicate data repeat the same ACK, while filling a gap advances it across all
+newly contiguous buffered bytes.
 
-The implementation sends immediate ACKs. Delayed ACK is an allowed
-optimization rather than a reliability requirement and is intentionally not
-used in the teaching adapter, keeping fault behavior deterministic.
+## Input validation
 
-## Send path and flow control
+Before protocol state changes, the implementation checks:
 
-New data may be emitted only while:
+1. connection four-tuple
+2. IPv4 TCP checksum
+3. segment sequence-space acceptability against `RCV.NXT` and `RCV.WND`
+4. ACK acceptability against `SND.UNA` and `SND.NXT`
+
+Checksum failures and wrong connections are discarded. An unacceptable
+non-RST segment receives the current ACK. A future ACK cannot release unsent
+data. RST handling uses an exact `RCV.NXT` match and a challenge ACK for an
+in-window non-exact sequence.
+
+## Flow control
+
+Normal data may be sent only while:
 
 ```text
 FlightSize < min(cwnd, SND.WND)
 ```
 
-Segments are limited to SMSS and retained until cumulatively acknowledged.
-Partial ACKs trim the acknowledged prefix of the oldest outstanding segment.
-ACKs beyond `SND.NXT`, stale ACKs, invalid checksums, and incorrect
-connections cannot release data.
+Window updates follow `SND.WL1` and `SND.WL2`, preventing an older segment
+from overwriting a newer peer-window value.
 
-Window updates follow `SND.WL1` and `SND.WL2`. A zero window prevents normal
-new-data transmission. The persist timer sends probes after one RTO and then
-backs off exponentially to 60 seconds. Persist probing does not reduce
-`cwnd`, consume unsent data, or advance sequence space.
+When `SND.WND` is zero, normal transmission and the data RTO timer stop. A
+persist probe is sent after one current RTO and then at exponentially backed
+off intervals up to 60 seconds. A probe does not consume pending bytes,
+advance `SND.NXT`, or reduce `cwnd`.
 
-## Retransmission timing
+## RTO behavior
 
-The initial RTO is one second. RTT samples update:
+Before an RTT measurement, RTO is one second. If this endpoint retransmitted
+its SYN or SYN-ACK, the data-phase RTO starts at three seconds.
+
+For an RTT sample `R`:
 
 ```text
-RTTVAR <- (1 - beta) * RTTVAR + beta * |SRTT - R|
-SRTT   <- (1 - alpha) * SRTT + alpha * R
+RTTVAR <- 3/4 * RTTVAR + 1/4 * |SRTT - R|
+SRTT   <- 7/8 * SRTT   + 1/8 * R
 RTO    <- SRTT + max(G, 4 * RTTVAR)
 ```
 
-where `alpha = 1/8` and `beta = 1/4`. RTO is clamped between 1 and
-60 seconds. Timeout retransmits only the earliest outstanding segment and
-doubles RTO. Karn's algorithm excludes retransmitted data from RTT samples.
+RTO is clamped to the range 1 through 60 seconds. A timeout retransmits the
+earliest unacknowledged segment, doubles RTO, sets `cwnd` to one SMSS, and
+restarts slow start. Karn's algorithm excludes retransmitted data from RTT
+measurement.
 
-## Reno congestion control
+## Reno behavior
 
-Slow start increases `cwnd` by `min(N, SMSS)` for an ACK that newly
-acknowledges `N` bytes. Congestion avoidance counts acknowledged bytes and
-adds one SMSS after approximately one congestion window is acknowledged.
+For the default 1200-byte SMSS, initial `cwnd` is three segments. A
+retransmitted handshake control reduces it to one segment.
 
-The first two qualifying duplicate ACKs may send one limited-transmit segment
-without changing `cwnd`. On the third:
+- slow start adds at most one SMSS for each ACK that confirms new data
+- congestion avoidance adds approximately one SMSS per RTT using byte counting
+- the first two qualifying duplicate ACKs may use Limited Transmit
+- the third duplicate ACK sets
+  `ssthresh = max(FlightSize / 2, 2 * SMSS)` and fast retransmits the oldest
+  outstanding segment
+- fast recovery uses `cwnd = ssthresh + 3 * SMSS`, inflates it for further
+  duplicate ACKs, and exits to `ssthresh` on the next new ACK
+- an idle sender restarts with `min(IW, cwnd)`
 
-```text
-ssthresh = max(FlightSize / 2, 2 * SMSS)
-cwnd     = ssthresh + 3 * SMSS
-```
+This is basic Reno rather than SACK or NewReno multi-loss recovery.
 
-The earliest outstanding segment is fast retransmitted. Additional duplicate
-ACKs inflate `cwnd` by one SMSS. The next new ACK exits basic Reno fast
-recovery and deflates `cwnd` to `ssthresh`.
+## Connection lifecycle
 
-An RTO sets `cwnd` to one SMSS and resumes slow start. A connection idle for
-longer than one RTO restarts with `min(IW, cwnd)`.
+The active peer sends SYN and enters SYN-SENT. The passive peer transitions
+from LISTEN to SYN-RECEIVED and replies with SYN+ACK. A valid final ACK
+establishes the connection. Duplicate SYN and SYN+ACK controls cause the
+corresponding control response to be retransmitted.
 
-## Deliberate scope limits
+Close follows FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, and
+TIME-WAIT as appropriate. FIN is retransmitted until acknowledged. A FIN
+following payload is interpreted at `SEG.SEQ + SEG.LEN`, and duplicate FINs
+are acknowledged throughout closing. TIME-WAIT lasts exactly twice the
+configured MSL.
 
-The supplied callbacks expose an already established, one-way application
-transfer. The core therefore does not implement SYN negotiation, FIN/RST
-lifecycle, simultaneous open, or TIME-WAIT. SACK, NewReno multi-loss
-recovery, ECN, timestamps, window scaling, Nagle, and Path MTU Discovery are
-also outside scope.
+The loopback CLI uses a 250 ms MSL because its UDP envelope does not have an
+Internet path on which old datagrams may remain for minutes. The multiplier
+and restart behavior remain `2 * MSL`.

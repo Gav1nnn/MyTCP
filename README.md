@@ -1,138 +1,140 @@
-# RFC-Aligned TCP Transport Core
+# MyTCP
 
-This project implements the established-state data transfer portion of TCP
-over the OUC TCP teaching framework. The implementation is being developed
-against the following standards:
+MyTCP is a standalone user-space implementation of the core TCP semantics,
+carried inside UDP datagrams. It implements a reliable, ordered, full-duplex
+byte stream without depending on the original teaching framework.
 
-- RFC 9293: reliable byte-stream transfer, sequence space, cumulative
-  acknowledgments, checksums, and receive-window flow control
-- RFC 5681: TCP Reno slow start, congestion avoidance, fast retransmit, and
-  fast recovery
-- RFC 6298: RTT measurement and retransmission timeout management
+The implemented profile follows:
 
-The scoped implementation is complete and connected to the framework entry
-points. Protocol behavior is covered by deterministic unit and end-to-end
-fault-injection tests.
+- [RFC 9293](https://www.rfc-editor.org/rfc/rfc9293.html): TCP header,
+  sequence space, cumulative acknowledgment, receive-window flow control,
+  connection establishment, reset handling, and orderly close
+- [RFC 5681](https://www.rfc-editor.org/rfc/rfc5681.html): Reno slow start,
+  congestion avoidance, fast retransmit, fast recovery, and idle restart
+- [RFC 6298](https://www.rfc-editor.org/rfc/rfc6298.html): SRTT/RTTVAR,
+  Karn's algorithm, RTO timer management, and exponential backoff
+- [RFC 6429](https://www.rfc-editor.org/rfc/rfc6429.html): zero-window
+  persist behavior
 
-## Scope
+SACK is intentionally not implemented.
 
-The project focuses on reliable, ordered data delivery over the framework's
-simulated unreliable channel. The target behavior includes corruption
-detection, loss recovery, out-of-order reassembly, receiver flow control,
-Reno congestion control, and adaptive retransmission timing.
+## What is implemented
 
-SACK, ECN, TCP timestamps, window scaling, and Path MTU Discovery are outside
-the project scope.
+- fixed 20-byte TCP header encoding in network byte order
+- IPv4 pseudo-header TCP checksum
+- active and passive three-way handshake with SYN/SYN-ACK retransmission
+- all normal connection states from `CLOSED` through `TIME_WAIT`
+- byte-oriented 32-bit modular sequence arithmetic
+- cumulative ACK with `ACK = RCV.NXT`
+- sender variables `SND.UNA`, `SND.NXT`, `SND.WND`, `SND.WL1`, and `SND.WL2`
+- receive-window acceptability checks before ACK or data processing
+- ordered delivery, out-of-order buffering, overlap trimming, and duplicate
+  suppression
+- sliding-window flow control and zero-window persist probing
+- Reno congestion control and RFC initial-window rules
+- adaptive RTO, Karn filtering, earliest-segment timeout retransmission, and
+  exponential backoff
+- FIN retransmission, duplicate-FIN handling, simultaneous-close states, and
+  a configurable `2 * MSL` TIME-WAIT
+- RST sequence validation and challenge ACKs
+- stable protocol traces and deterministic fault injection
 
-## Framework boundary
+## Explicit boundaries
 
-The supplied framework transports Java `TCP_PACKET` objects over UDP and only
-dispatches data and acknowledgment packet types to the student implementation.
-It does not expose SYN, SYN-ACK, FIN, and RST processing to the protocol
-callbacks. For that reason, this project models a connection that is already
-in the TCP `ESTABLISHED` state; it is not a wire-compatible operating-system
-TCP stack.
+MyTCP is an RFC-aligned experimental profile, not an operating-system TCP
+stack. The encoded TCP segment is transported inside UDP, so it cannot connect
+directly to a normal OS TCP socket. The CLI currently binds to IPv4 loopback,
+uses one configured peer, and transfers one file from client to server.
 
-The framework entry points remain:
+TCP options and related extensions are outside this profile: SACK, timestamps,
+window scaling, MSS option negotiation, ECN, urgent data, and TCP
+authentication. Simultaneous open, a listener backlog, IPv6, Path MTU
+Discovery, and a POSIX socket API are also not implemented. The fixed SMSS is
+1200 bytes and the receiver delivers available bytes immediately, so the CLI
+does not model application-driven receive-buffer pressure.
 
-- `com.ouc.tcp.test.TCP_Sender`
-- `com.ouc.tcp.test.TCP_Receiver`
-- `com.ouc.tcp.test.TestRun`
+See [RFC compliance](docs/rfc-compliance.md) for the exact requirement-to-test
+mapping.
 
-## Data representation
+## Build and test
 
-The framework application supplies data as Java `int[]` groups. The adapter
-encodes every integer as four bytes in network byte order before handing data
-to the TCP core. Sequence and acknowledgment numbers therefore count bytes,
-not framework array elements or packets. The receiver performs the inverse
-conversion only after contiguous bytes are ready for application delivery.
-
-## Receive path
-
-The standalone receive engine validates the TCP checksum before changing
-connection state, applies RFC receive-window acceptability checks, trims
-overlapping data to the current window, buffers out-of-order bytes, and
-delivers only the contiguous range beginning at `RCV.NXT`. Its acknowledgment
-number is always the first byte that has not been received in order.
-
-Acknowledgment transmission policy, including delayed acknowledgments, is
-implemented separately from byte reassembly.
-
-## Send path
-
-The standalone sender assigns sequence numbers only when bytes are admitted by
-both the congestion window and the peer's advertised receive window. Sent
-segments remain in an ordered retransmission queue until cumulatively
-acknowledged. Partial acknowledgments trim only the acknowledged prefix of the
-oldest segment, while acknowledgments beyond `SND.NXT` cannot release data.
-
-Peer window updates are ordered with `SND.WL1` and `SND.WL2` so stale
-acknowledgments cannot overwrite a newer send-window value.
-
-The Reno congestion controller uses appropriate byte counting in slow start
-and congestion avoidance. The first two qualifying duplicate acknowledgments
-can clock limited transmissions without increasing `cwnd`; the third triggers
-fast retransmit and fast recovery. Retransmission timeout loss returns `cwnd`
-to one SMSS and applies exponential RTO backoff independently.
-
-When the peer advertises a zero window, the sender switches from the
-retransmission timer to an exponentially backed-off persist timer. Probes do
-not consume pending application data or advance `SND.NXT`. A long-idle sender
-reduces its congestion window to the restart window before sending again.
-
-## Build
-
-JDK 17 and Maven are required.
+JDK 17 or newer and Maven are required.
 
 ```shell
-mvn clean package
+mvn clean test
+mvn package
 ```
 
-The supplied framework dependency is stored at
-`lib/TCP_TestSys_Linux.jar`.
-
-Run the deterministic protocol tests with:
-
-```shell
-mvn test
-```
-
-The test environment uses a manual monotonic clock and an in-memory channel,
-so loss, corruption, delay, reordering, and duplication scenarios do not
-depend on wall-clock sleeps or random outcomes.
-
-Run the complete teaching experiment from the repository root with:
-
-```shell
-mvn compile
-java -cp "target/classes:lib/TCP_TestSys_Linux.jar" com.ouc.tcp.test.TestRun
-```
-
-The framework prompts for Enter before reading `ENCDA.tcp`. Received
-application integers are written to `recvData.txt`. The supplied listener
-threads remain active after the transfer, so stop the experiment with
-`Ctrl-C` after the final acknowledgment has arrived.
-
-After `mvn package`, the same experiment can be started with:
-
-```shell
-java -jar target/tcp-test-1-1.0-SNAPSHOT.jar
-```
-
-## Design documentation
-
-- [`docs/architecture.md`](docs/architecture.md): module boundaries and data
-  flow
-- [`docs/protocol-behavior.md`](docs/protocol-behavior.md): sender and receiver
-  state transitions, invariants, and supported RFC behavior
-- [`docs/verification.md`](docs/verification.md): deterministic test strategy
-  and experiment checklist
-
-## Repository layout
+The executable artifact is:
 
 ```text
-src/main/java/    implementation
-src/test/java/    automated tests
-docs/             architecture and protocol notes
-lib/              supplied teaching framework
+target/mytcp-1.0-SNAPSHOT.jar
 ```
+
+Running it without arguments prints the command syntax:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar
+```
+
+## Transfer a file
+
+Start the server first:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar \
+  server 19002 19001 received.bin \
+  --trace server.trace
+```
+
+Then start the client in another terminal:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar \
+  client 19001 19002 input.bin \
+  --trace client.trace
+```
+
+Validate the result:
+
+```shell
+cmp input.bin received.bin
+shasum -a 256 input.bin received.bin
+```
+
+`cmp` must produce no output and both hashes must match.
+
+## Observe cumulative ACK and Reno state
+
+The trace is deliberately line oriented:
+
+```text
+event=segment direction=RECEIVE seq=... ack=... len=0 flags=ACK rwnd=32768 checksum=...
+event=sender state=ESTABLISHED snd_una=... snd_nxt=... flight=... cwnd=... ssthresh=... rwnd=... rto_ms=...
+event=state from=ESTABLISHED to=FIN_WAIT_1
+```
+
+On the sender, a larger `snd_una` after an ACK demonstrates cumulative
+acknowledgment. `flight` is `SND.NXT - SND.UNA`, while `cwnd`, `ssthresh`, and
+`rto_ms` expose congestion and timer behavior.
+
+## Inject reproducible faults
+
+Faults are keyed by the one-based outbound transmission number:
+
+```shell
+java -jar target/mytcp-1.0-SNAPSHOT.jar \
+  client 19001 19002 input.bin \
+  --trace client.trace \
+  --fault "3=drop,4=duplicate,5=reorder,9=corrupt"
+```
+
+Supported actions are `drop`, `corrupt`, `duplicate`, and `reorder`. Fault
+events appear in the same trace, making a run reproducible and reviewable.
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Protocol behavior](docs/protocol-behavior.md)
+- [RFC compliance](docs/rfc-compliance.md)
+- [Verification](docs/verification.md)
