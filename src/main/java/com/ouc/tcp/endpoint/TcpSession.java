@@ -12,7 +12,6 @@ import com.ouc.tcp.core.TcpFlag;
 import com.ouc.tcp.core.TcpSegment;
 import com.ouc.tcp.timer.ExecutorScheduler;
 import com.ouc.tcp.timer.RetransmissionTimer;
-import com.ouc.tcp.timer.RttEstimator;
 import com.ouc.tcp.transport.SegmentTransport;
 
 import java.io.IOException;
@@ -330,7 +329,8 @@ public final class TcpSession implements AutoCloseable {
                 return;
             }
             controlRetransmissionTimeout =
-                    doubledControlTimeout(controlRetransmissionTimeout);
+                    controlRetryPolicy.backOff(
+                            controlRetransmissionTimeout);
             scheduleControlTimeout();
         }
         try {
@@ -339,18 +339,6 @@ public final class TcpSession implements AutoCloseable {
             asynchronousControlFailure.compareAndSet(null, failure);
             controlRetransmissionTimer.stop();
         }
-    }
-
-    private static Duration doubledControlTimeout(Duration timeout) {
-        Duration doubled;
-        try {
-            doubled = timeout.multipliedBy(2);
-        } catch (ArithmeticException overflow) {
-            return RttEstimator.DEFAULT_MAXIMUM_RTO;
-        }
-        return doubled.compareTo(RttEstimator.DEFAULT_MAXIMUM_RTO) > 0
-                ? RttEstimator.DEFAULT_MAXIMUM_RTO
-                : doubled;
     }
 
     private void checkAsynchronousControlFailure() throws IOException {

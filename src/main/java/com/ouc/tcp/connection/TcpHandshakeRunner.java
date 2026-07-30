@@ -5,6 +5,7 @@ import com.ouc.tcp.transport.SegmentTransport;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
+import java.time.Duration;
 import java.util.Objects;
 
 /**
@@ -38,9 +39,10 @@ public final class TcpHandshakeRunner {
         int timeoutCount = 0;
         int peerAdvertisedWindow = 0;
         boolean localControlRetransmitted = false;
+        Duration currentTimeout = retryPolicy.timeout();
         while (timeoutCount < retryPolicy.maximumTimeouts()) {
             try {
-                TcpSegment received = transport.receive(retryPolicy.timeout());
+                TcpSegment received = transport.receive(currentTimeout);
                 LifecycleResult result = lifecycle.receive(received);
                 if (!result.accepted()) {
                     continue;
@@ -64,6 +66,7 @@ public final class TcpHandshakeRunner {
                         transport.send(retry);
                         localControlRetransmitted = true;
                     }
+                    currentTimeout = retryPolicy.backOff(currentTimeout);
                 }
             }
         }

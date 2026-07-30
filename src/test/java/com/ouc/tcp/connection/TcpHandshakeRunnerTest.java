@@ -11,6 +11,8 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.SocketTimeoutException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -68,6 +70,31 @@ class TcpHandshakeRunnerTest {
 
             assertThrows(SocketTimeoutException.class, client::activeOpen);
         }
+    }
+
+    @Test
+    void handshakeRetransmissionTimeoutBacksOffExponentially()
+            throws Exception {
+        Inet4Address loopback = ipv4("127.0.0.1");
+        TimeoutTransport transport = new TimeoutTransport();
+        TcpHandshakeRunner client = new TcpHandshakeRunner(
+                new TcpConnectionLifecycle(new ConnectionConfig(
+                        loopback,
+                        loopback,
+                        19_001,
+                        19_002,
+                        SequenceNumber32.of(1_000),
+                        32_768)),
+                transport,
+                new ControlRetryPolicy(Duration.ofMillis(10), 3));
+
+        assertThrows(SocketTimeoutException.class, client::activeOpen);
+        assertEquals(
+                List.of(
+                        Duration.ofMillis(10),
+                        Duration.ofMillis(20),
+                        Duration.ofMillis(40)),
+                transport.receiveTimeouts());
     }
 
     private static Handshakes runHandshake(Fixture fixture) throws Exception {
@@ -164,6 +191,29 @@ class TcpHandshakeRunnerTest {
         @Override
         public void close() {
             delegate.close();
+        }
+    }
+
+    private static final class TimeoutTransport implements SegmentTransport {
+        private final List<Duration> receiveTimeouts = new ArrayList<>();
+
+        @Override
+        public void send(TcpSegment segment) {
+        }
+
+        @Override
+        public TcpSegment receive(Duration timeout)
+                throws SocketTimeoutException {
+            receiveTimeouts.add(timeout);
+            throw new SocketTimeoutException("injected timeout");
+        }
+
+        @Override
+        public void close() {
+        }
+
+        private List<Duration> receiveTimeouts() {
+            return List.copyOf(receiveTimeouts);
         }
     }
 }
