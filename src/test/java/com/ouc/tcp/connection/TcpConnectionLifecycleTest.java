@@ -241,6 +241,33 @@ class TcpConnectionLifecycleTest {
     }
 
     @Test
+    void simultaneousClosePassesThroughClosingAndTimeWait()
+            throws Exception {
+        Peers peers = establishedPeers();
+        SequenceNumber32 clientNext =
+                SequenceNumber32.of(CLIENT_ISN + 1);
+        SequenceNumber32 serverNext =
+                SequenceNumber32.of(SERVER_ISN + 1);
+
+        TcpSegment clientFin = only(peers.client.close(
+                clientNext,
+                serverNext));
+        TcpSegment serverFin = only(peers.server.close(
+                serverNext,
+                clientNext));
+
+        TcpSegment clientAck = only(peers.client.receive(serverFin));
+        TcpSegment serverAck = only(peers.server.receive(clientFin));
+        assertEquals(TcpState.CLOSING, peers.client.state());
+        assertEquals(TcpState.CLOSING, peers.server.state());
+
+        peers.client.receive(serverAck);
+        peers.server.receive(clientAck);
+        assertEquals(TcpState.TIME_WAIT, peers.client.state());
+        assertEquals(TcpState.TIME_WAIT, peers.server.state());
+    }
+
+    @Test
     void rejectsInvalidLifecycleCalls() throws Exception {
         Peers peers = peers();
 
