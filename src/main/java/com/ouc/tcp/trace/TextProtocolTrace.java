@@ -3,6 +3,7 @@ package com.ouc.tcp.trace;
 import com.ouc.tcp.connection.TcpState;
 import com.ouc.tcp.core.TcpFlag;
 import com.ouc.tcp.core.TcpSegment;
+import com.ouc.tcp.transport.FaultAction;
 
 import java.io.PrintWriter;
 import java.io.Writer;
@@ -66,6 +67,28 @@ public final class TextProtocolTrace implements ProtocolTrace {
                 snapshot.slowStartThreshold(),
                 snapshot.sendWindow(),
                 snapshot.retransmissionTimeout().toMillis());
+        output.flush();
+    }
+
+    @Override
+    public synchronized void fault(
+            long transmissionNumber,
+            FaultAction action,
+            TcpSegment segment) {
+        if (transmissionNumber < 1) {
+            throw new IllegalArgumentException(
+                    "transmissionNumber must be positive");
+        }
+        Objects.requireNonNull(action, "action");
+        Objects.requireNonNull(segment, "segment");
+        output.printf(
+                "event=fault transmission=%d action=%s "
+                        + "seq=%s ack=%s len=%d%n",
+                transmissionNumber,
+                action,
+                Long.toUnsignedString(segment.sequenceNumber()),
+                Long.toUnsignedString(segment.acknowledgmentNumber()),
+                segment.payloadLength());
         output.flush();
     }
 
