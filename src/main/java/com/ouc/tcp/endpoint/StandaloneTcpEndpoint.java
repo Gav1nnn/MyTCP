@@ -16,6 +16,7 @@ import com.ouc.tcp.timer.Clock;
 import com.ouc.tcp.timer.ExecutorScheduler;
 import com.ouc.tcp.timer.RttEstimator;
 import com.ouc.tcp.transport.SegmentTransport;
+import com.ouc.tcp.trace.SenderSnapshot;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -135,6 +136,17 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
 
     public synchronized Duration retransmissionTimeout() {
         return sender.retransmissionTimeout();
+    }
+
+    public synchronized SenderSnapshot senderSnapshot() {
+        return new SenderSnapshot(
+                sender.sendUnacknowledged(),
+                sender.sendNext(),
+                sender.flightSize(),
+                sender.congestionWindow(),
+                sender.slowStartThreshold(),
+                sender.sendWindow(),
+                sender.retransmissionTimeout());
     }
 
     public synchronized SequenceNumber32 sendNext() {

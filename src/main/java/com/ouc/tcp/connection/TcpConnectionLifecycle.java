@@ -4,6 +4,7 @@ import com.ouc.tcp.checksum.TcpChecksum;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.core.TcpFlag;
 import com.ouc.tcp.core.TcpSegment;
+import com.ouc.tcp.trace.ProtocolTrace;
 
 import java.util.List;
 import java.util.Objects;
@@ -20,13 +21,21 @@ import java.util.Set;
  */
 public final class TcpConnectionLifecycle {
     private final ConnectionConfig config;
+    private final ProtocolTrace trace;
     private TcpState state = TcpState.CLOSED;
     private SequenceNumber32 sendNext;
     private SequenceNumber32 receiveNext;
     private TcpSegment outstandingControl;
 
     public TcpConnectionLifecycle(ConnectionConfig config) {
+        this(config, ProtocolTrace.none());
+    }
+
+    public TcpConnectionLifecycle(
+            ConnectionConfig config,
+            ProtocolTrace trace) {
         this.config = Objects.requireNonNull(config, "config");
+        this.trace = Objects.requireNonNull(trace, "trace");
         sendNext = config.initialSendSequence();
     }
 
@@ -375,6 +384,9 @@ public final class TcpConnectionLifecycle {
             boolean accepted,
             TcpState previous,
             List<TcpSegment> transmissions) {
+        if (previous != state) {
+            trace.stateTransition(previous, state);
+        }
         return new LifecycleResult(accepted, previous, state, transmissions);
     }
 

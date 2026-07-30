@@ -13,6 +13,8 @@ import com.ouc.tcp.core.TcpSegment;
 import com.ouc.tcp.timer.ExecutorScheduler;
 import com.ouc.tcp.timer.RetransmissionTimer;
 import com.ouc.tcp.transport.SegmentTransport;
+import com.ouc.tcp.trace.ProtocolTrace;
+import com.ouc.tcp.trace.SenderSnapshot;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -31,6 +33,7 @@ public final class TcpSession implements AutoCloseable {
     private final RetransmissionTimer controlRetransmissionTimer;
     private final RetransmissionTimer timeWaitTimer;
     private final SessionTiming sessionTiming;
+    private final ProtocolTrace trace;
     private final Object controlTimerLock = new Object();
     private final AtomicReference<IOException> asynchronousControlFailure =
             new AtomicReference<>();
@@ -45,11 +48,13 @@ public final class TcpSession implements AutoCloseable {
             HandshakeResult handshake,
             ControlRetryPolicy controlRetryPolicy,
             SessionTiming sessionTiming,
-            EndpointTuning tuning) {
+            EndpointTuning tuning,
+            ProtocolTrace trace) {
         this.transport = transport;
         this.lifecycle = lifecycle;
         this.controlRetryPolicy = controlRetryPolicy;
         this.sessionTiming = sessionTiming;
+        this.trace = trace;
         controlScheduler = new ExecutorScheduler(
                 "standalone-tcp-control-" + connectionConfig.localPort());
         controlRetransmissionTimer =
@@ -71,6 +76,7 @@ public final class TcpSession implements AutoCloseable {
                         tuning.initialSlowStartThreshold(),
                         handshake.initialDataRetransmissionTimeout()),
                 transport);
+        traceSenderSnapshot();
     }
 
     public static TcpSession openActive(
@@ -83,7 +89,8 @@ public final class TcpSession implements AutoCloseable {
                 transport,
                 retryPolicy,
                 SessionTiming.loopbackDefaults(),
-                tuning);
+                tuning,
+                ProtocolTrace.none());
     }
 
     public static TcpSession openActive(
@@ -92,12 +99,29 @@ public final class TcpSession implements AutoCloseable {
             ControlRetryPolicy retryPolicy,
             SessionTiming sessionTiming,
             EndpointTuning tuning) throws IOException {
+        return openActive(
+                connectionConfig,
+                transport,
+                retryPolicy,
+                sessionTiming,
+                tuning,
+                ProtocolTrace.none());
+    }
+
+    public static TcpSession openActive(
+            ConnectionConfig connectionConfig,
+            SegmentTransport transport,
+            ControlRetryPolicy retryPolicy,
+            SessionTiming sessionTiming,
+            EndpointTuning tuning,
+            ProtocolTrace trace) throws IOException {
         return open(
                 connectionConfig,
                 transport,
                 retryPolicy,
                 sessionTiming,
                 tuning,
+                trace,
                 true);
     }
 
@@ -111,7 +135,8 @@ public final class TcpSession implements AutoCloseable {
                 transport,
                 retryPolicy,
                 SessionTiming.loopbackDefaults(),
-                tuning);
+                tuning,
+                ProtocolTrace.none());
     }
 
     public static TcpSession openPassive(
@@ -120,12 +145,29 @@ public final class TcpSession implements AutoCloseable {
             ControlRetryPolicy retryPolicy,
             SessionTiming sessionTiming,
             EndpointTuning tuning) throws IOException {
+        return openPassive(
+                connectionConfig,
+                transport,
+                retryPolicy,
+                sessionTiming,
+                tuning,
+                ProtocolTrace.none());
+    }
+
+    public static TcpSession openPassive(
+            ConnectionConfig connectionConfig,
+            SegmentTransport transport,
+            ControlRetryPolicy retryPolicy,
+            SessionTiming sessionTiming,
+            EndpointTuning tuning,
+            ProtocolTrace trace) throws IOException {
         return open(
                 connectionConfig,
                 transport,
                 retryPolicy,
                 sessionTiming,
                 tuning,
+                trace,
                 false);
     }
 
@@ -133,6 +175,7 @@ public final class TcpSession implements AutoCloseable {
         checkAsynchronousControlFailure();
         requireState(TcpState.ESTABLISHED);
         endpoint.send(data);
+        traceSenderSnapshot();
     }
 
     public SessionEvent poll(Duration timeout) throws IOException {
@@ -163,6 +206,7 @@ public final class TcpSession implements AutoCloseable {
                     lifecycleResult.accepted());
         }
         checkAsynchronousControlFailure();
+        traceSenderSnapshot();
         return new SessionEvent(segment, delivered, lifecycle.state());
     }
 
@@ -177,6 +221,7 @@ public final class TcpSession implements AutoCloseable {
         }
         send(lifecycle.close(endpoint.sendNext(), lifecycle.receiveNext()));
         startControlRetransmissionTimer();
+        traceSenderSnapshot();
     }
 
     public void expireTimeWait() {
@@ -202,6 +247,10 @@ public final class TcpSession implements AutoCloseable {
         return endpoint.retransmissionTimeout();
     }
 
+    public SenderSnapshot senderSnapshot() {
+        return endpoint.senderSnapshot();
+    }
+
     @Override
     public void close() {
         controlRetransmissionTimer.stop();
@@ -216,14 +265,16 @@ public final class TcpSession implements AutoCloseable {
             ControlRetryPolicy retryPolicy,
             SessionTiming sessionTiming,
             EndpointTuning tuning,
+            ProtocolTrace trace,
             boolean active) throws IOException {
         Objects.requireNonNull(connectionConfig, "connectionConfig");
         Objects.requireNonNull(transport, "transport");
         Objects.requireNonNull(retryPolicy, "retryPolicy");
         Objects.requireNonNull(sessionTiming, "sessionTiming");
         Objects.requireNonNull(tuning, "tuning");
+        Objects.requireNonNull(trace, "trace");
         TcpConnectionLifecycle lifecycle =
-                new TcpConnectionLifecycle(connectionConfig);
+                new TcpConnectionLifecycle(connectionConfig, trace);
         TcpHandshakeRunner handshakeRunner =
                 new TcpHandshakeRunner(lifecycle, transport, retryPolicy);
         HandshakeResult handshake = active
@@ -236,7 +287,8 @@ public final class TcpSession implements AutoCloseable {
                 handshake,
                 retryPolicy,
                 sessionTiming,
-                tuning);
+                tuning,
+                trace);
     }
 
     private boolean lifecycleNeeds(TcpSegment segment) {
@@ -264,6 +316,12 @@ public final class TcpSession implements AutoCloseable {
         for (TcpSegment segment : result.transmissions()) {
             transport.send(segment);
         }
+    }
+
+    private void traceSenderSnapshot() {
+        trace.senderSnapshot(
+                lifecycle.state(),
+                endpoint.senderSnapshot());
     }
 
     private void startControlRetransmissionTimer() {

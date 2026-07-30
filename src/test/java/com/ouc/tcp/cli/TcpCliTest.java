@@ -12,6 +12,7 @@ import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TcpCliTest {
     @Test
@@ -25,6 +26,8 @@ class TcpCliTest {
         }
         Path input = temp.resolve("input.bin");
         Path output = temp.resolve("output.bin");
+        Path clientTrace = temp.resolve("client.trace");
+        Path serverTrace = temp.resolve("server.trace");
         Files.write(input, expected);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -35,7 +38,9 @@ class TcpCliTest {
                         "server",
                         Integer.toString(serverPort),
                         Integer.toString(clientPort),
-                        output.toString()
+                        output.toString(),
+                        "--trace",
+                        serverTrace.toString()
                     });
                 } catch (Exception failure) {
                     throw new RuntimeException(failure);
@@ -45,7 +50,9 @@ class TcpCliTest {
                 "client",
                 Integer.toString(clientPort),
                 Integer.toString(serverPort),
-                input.toString()
+                input.toString(),
+                "--trace",
+                clientTrace.toString()
             });
             server.get();
         } finally {
@@ -53,6 +60,16 @@ class TcpCliTest {
         }
 
         assertArrayEquals(expected, Files.readAllBytes(output));
+        String clientEvents = Files.readString(clientTrace);
+        String serverEvents = Files.readString(serverTrace);
+        assertTrue(clientEvents.contains(
+                "event=state from=CLOSED to=SYN_SENT"));
+        assertTrue(clientEvents.contains("flags=SYN"));
+        assertTrue(clientEvents.contains("event=sender state=ESTABLISHED"));
+        assertTrue(clientEvents.contains("snd_una="));
+        assertTrue(serverEvents.contains(
+                "event=state from=LISTEN to=SYN_RECEIVED"));
+        assertTrue(serverEvents.contains("direction=RECEIVE"));
     }
 
     @Test

@@ -2,11 +2,16 @@ package com.ouc.tcp.cli;
 
 import com.ouc.tcp.connection.ConnectionConfig;
 import com.ouc.tcp.connection.ControlRetryPolicy;
+import com.ouc.tcp.connection.SessionTiming;
 import com.ouc.tcp.connection.TcpState;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.endpoint.EndpointTuning;
 import com.ouc.tcp.endpoint.SessionEvent;
 import com.ouc.tcp.endpoint.TcpSession;
+import com.ouc.tcp.trace.ProtocolTrace;
+import com.ouc.tcp.trace.TextProtocolTrace;
+import com.ouc.tcp.trace.TracingSegmentTransport;
+import com.ouc.tcp.transport.SegmentTransport;
 import com.ouc.tcp.transport.UdpSegmentTransport;
 
 import java.io.IOException;
@@ -52,13 +57,19 @@ public final class TcpCli {
     private static void runClient(CliArguments arguments) throws Exception {
         byte[] input = Files.readAllBytes(arguments.file());
         Inet4Address loopback = loopback();
-        try (UdpSegmentTransport transport =
-                        new UdpSegmentTransport(loopback, arguments.localPort());
+        try (ProtocolTrace trace = trace(arguments);
+                SegmentTransport transport = new TracingSegmentTransport(
+                        new UdpSegmentTransport(
+                                loopback,
+                                arguments.localPort()),
+                        trace);
                 TcpSession session = TcpSession.openActive(
                         connection(arguments, loopback),
                         transport,
                         retryPolicy(),
-                        EndpointTuning.defaults())) {
+                        SessionTiming.loopbackDefaults(),
+                        EndpointTuning.defaults(),
+                        trace)) {
             session.send(input);
             while (!session.sendComplete()) {
                 pollIgnoringIdleTimeout(session);
@@ -75,13 +86,19 @@ public final class TcpCli {
     private static void runServer(CliArguments arguments) throws Exception {
         Inet4Address loopback = loopback();
         long receivedBytes = 0;
-        try (UdpSegmentTransport transport =
-                        new UdpSegmentTransport(loopback, arguments.localPort());
+        try (ProtocolTrace trace = trace(arguments);
+                SegmentTransport transport = new TracingSegmentTransport(
+                        new UdpSegmentTransport(
+                                loopback,
+                                arguments.localPort()),
+                        trace);
                 TcpSession session = TcpSession.openPassive(
                         connection(arguments, loopback),
                         transport,
                         retryPolicy(),
-                        EndpointTuning.defaults());
+                        SessionTiming.loopbackDefaults(),
+                        EndpointTuning.defaults(),
+                        trace);
                 OutputStream output = Files.newOutputStream(arguments.file())) {
             while (session.state() == TcpState.ESTABLISHED) {
                 try {
@@ -133,6 +150,14 @@ public final class TcpCli {
                 CONTROL_TIMEOUT, CONTROL_TIMEOUT_LIMIT);
     }
 
+    private static ProtocolTrace trace(CliArguments arguments)
+            throws IOException {
+        return arguments.traceFile() == null
+                ? ProtocolTrace.none()
+                : new TextProtocolTrace(
+                        Files.newBufferedWriter(arguments.traceFile()));
+    }
+
     private static Inet4Address loopback() throws Exception {
         return (Inet4Address) InetAddress.getByName("127.0.0.1");
     }
@@ -143,10 +168,16 @@ public final class TcpCli {
     }
 
     private record CliArguments(
-            Mode mode, int localPort, int peerPort, Path file) {
+            Mode mode,
+            int localPort,
+            int peerPort,
+            Path file,
+            Path traceFile) {
 
         private static CliArguments parse(String[] arguments) {
-            if (arguments == null || arguments.length != 4) {
+            if (arguments == null
+                    || (arguments.length != 4
+                            && arguments.length != 6)) {
                 throw usage();
             }
             Mode mode = switch (arguments[0]) {
@@ -161,7 +192,21 @@ public final class TcpCli {
                 throw new IllegalArgumentException(
                         "input file does not exist: " + file);
             }
-            return new CliArguments(mode, localPort, peerPort, file);
+            Path traceFile = null;
+            if (arguments.length == 6) {
+                if (!"--trace".equals(arguments[4])) {
+                    throw usage();
+                }
+                traceFile = Path.of(arguments[5])
+                        .toAbsolutePath()
+                        .normalize();
+            }
+            return new CliArguments(
+                    mode,
+                    localPort,
+                    peerPort,
+                    file,
+                    traceFile);
         }
 
         private static int port(String text, String name) {
@@ -180,7 +225,8 @@ public final class TcpCli {
         private static IllegalArgumentException usage() {
             return new IllegalArgumentException(
                     "usage: mytcp <client|server> "
-                            + "<local-port> <peer-port> <file>");
+                            + "<local-port> <peer-port> <file> "
+                            + "[--trace <trace-file>]");
         }
     }
 }
