@@ -90,6 +90,9 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
             ReceiveResult result = receiver.receive(segment);
             delivered = result.deliveredBytes();
             receiveDisposition = Optional.of(result.disposition());
+            sender.updateReceiveState(
+                    result.acknowledgmentNumber(),
+                    result.advertisedWindow());
             if (result.acknowledgmentRequired()) {
                 transport.send(acknowledgment(result));
             }

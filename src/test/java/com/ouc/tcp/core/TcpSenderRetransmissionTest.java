@@ -111,6 +111,21 @@ class TcpSenderRetransmissionTest {
         assertEquals(Duration.ofSeconds(2), fixture.sender.retransmissionTimeout());
     }
 
+    @Test
+    void retransmissionRefreshesCumulativeAckAndReceiveWindow()
+            throws Exception {
+        SenderFixture fixture = sender(100, 4, 4, 4);
+        fixture.sender.queueData(new byte[] {1, 2, 3, 4});
+        fixture.sender.updateReceiveState(SequenceNumber32.of(507), 3);
+
+        fixture.scheduler.advanceBy(Duration.ofSeconds(1));
+
+        TcpSegment retransmission = fixture.retransmissions.get(0);
+        assertEquals(507, retransmission.acknowledgmentNumber());
+        assertEquals(3, retransmission.advertisedWindow());
+        assertTrue(TcpChecksum.isValid(retransmission));
+    }
+
     private static SenderFixture sender(
             long initialSequence, int receiverWindow, long congestionWindow, int smss)
             throws Exception {

@@ -254,6 +254,20 @@ class TcpSenderEngineTest {
         assertEquals(6, sender.flightSize());
     }
 
+    @Test
+    void outgoingDataCarriesCurrentCumulativeAckAndReceiveWindow()
+            throws Exception {
+        TcpSenderEngine sender = sender(100, 8, 8, 4);
+
+        sender.updateReceiveState(SequenceNumber32.of(507), 6);
+        TcpSegment segment =
+                sender.queueData(new byte[] {1, 2, 3, 4}).get(0);
+
+        assertEquals(507, segment.acknowledgmentNumber());
+        assertEquals(6, segment.advertisedWindow());
+        assertTrue(TcpChecksum.isValid(segment));
+    }
+
     private static TcpSenderEngine sender(
             long initialSequence, int receiverWindow, long congestionWindow, int smss)
             throws Exception {

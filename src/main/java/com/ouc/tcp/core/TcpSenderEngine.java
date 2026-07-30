@@ -37,6 +37,8 @@ public final class TcpSenderEngine {
 
     private Duration persistInterval;
     private Long lastDataSentNanos;
+    private SequenceNumber32 acknowledgmentNumber;
+    private int localAdvertisedWindow;
 
     public TcpSenderEngine(
             SenderConfig config,
@@ -60,6 +62,8 @@ public final class TcpSenderEngine {
                 config.initialSendNext(),
                 config.peerAdvertisedWindow(),
                 config.initialCongestionWindow());
+        acknowledgmentNumber = config.acknowledgmentNumber();
+        localAdvertisedWindow = config.localAdvertisedWindow();
     }
 
     /**
@@ -138,9 +142,9 @@ public final class TcpSenderEngine {
                     controlBlock.flightSize());
             synchronizeCongestionWindow();
             if (duplicateAckAction == DuplicateAckAction.FAST_RETRANSMIT) {
-                transmissions.add(
+                transmissions.add(refreshReceiveFields(
                         retransmissionQueue.retransmitEarliestFast(
-                                clock.nanoTime()));
+                                clock.nanoTime())));
                 lastDataSentNanos = clock.nanoTime();
             }
         } else {
@@ -148,8 +152,8 @@ public final class TcpSenderEngine {
         }
 
         if (windowReopened && retransmissionQueue.segmentCount() > 0) {
-            transmissions.add(
-                    retransmissionQueue.retransmitEarliestFast(clock.nanoTime()));
+            transmissions.add(refreshReceiveFields(
+                    retransmissionQueue.retransmitEarliestFast(clock.nanoTime())));
             lastDataSentNanos = clock.nanoTime();
         }
         if (duplicateAckAction == DuplicateAckAction.LIMITED_TRANSMIT) {
@@ -176,6 +180,19 @@ public final class TcpSenderEngine {
         congestionController.setCongestionWindow(congestionWindow);
         synchronizeCongestionWindow();
         return emitPermittedSegments();
+    }
+
+    public synchronized void updateReceiveState(
+            SequenceNumber32 currentReceiveNext,
+            int currentAdvertisedWindow) {
+        acknowledgmentNumber =
+                Objects.requireNonNull(currentReceiveNext, "currentReceiveNext");
+        if (currentAdvertisedWindow < 0
+                || currentAdvertisedWindow > TcpSegment.MAX_WINDOW) {
+            throw new IllegalArgumentException(
+                    "currentAdvertisedWindow must be an unsigned 16-bit value");
+        }
+        localAdvertisedWindow = currentAdvertisedWindow;
     }
 
     public synchronized SequenceNumber32 sendUnacknowledged() {
@@ -311,8 +328,9 @@ public final class TcpSenderEngine {
                     retransmissionQueue.earliestHasTimedOut());
             synchronizeCongestionWindow();
             retransmission =
-                    retransmissionQueue.retransmitEarliestDueToTimeout(
-                            clock.nanoTime());
+                    refreshReceiveFields(
+                            retransmissionQueue.retransmitEarliestDueToTimeout(
+                                    clock.nanoTime()));
             lastDataSentNanos = clock.nanoTime();
             rttEstimator.backOff();
             restartRetransmissionTimer();
@@ -357,7 +375,8 @@ public final class TcpSenderEngine {
                 return;
             }
             if (retransmissionQueue.segmentCount() > 0) {
-                probe = retransmissionQueue.retransmitEarliestFast(clock.nanoTime());
+                probe = refreshReceiveFields(
+                        retransmissionQueue.retransmitEarliestFast(clock.nanoTime()));
             } else {
                 byte[] probePayload = pendingData.peek(
                         Math.min(
@@ -420,11 +439,17 @@ public final class TcpSenderEngine {
                 config.localPort(),
                 config.remotePort(),
                 sequenceNumber.toLong(),
-                config.acknowledgmentNumber().toLong(),
+                acknowledgmentNumber.toLong(),
                 Set.of(TcpFlag.ACK),
-                config.localAdvertisedWindow(),
+                localAdvertisedWindow,
                 0,
                 payload));
+    }
+
+    private TcpSegment refreshReceiveFields(TcpSegment segment) {
+        return TcpChecksum.apply(segment
+                .withAcknowledgmentNumber(acknowledgmentNumber.toLong())
+                .withAdvertisedWindow(localAdvertisedWindow));
     }
 
     private AckDisposition classifyAcknowledgment(SequenceNumber32 acknowledgment) {

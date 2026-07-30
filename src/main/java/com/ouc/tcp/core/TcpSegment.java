@@ -144,6 +144,35 @@ public final class TcpSegment {
                 payload);
     }
 
+    public TcpSegment withAcknowledgmentNumber(
+            long replacementAcknowledgmentNumber) {
+        return new TcpSegment(
+                sourceAddress,
+                destinationAddress,
+                sourcePort,
+                destinationPort,
+                sequenceNumber,
+                replacementAcknowledgmentNumber,
+                flags,
+                advertisedWindow,
+                checksum,
+                payload);
+    }
+
+    public TcpSegment withAdvertisedWindow(int replacementAdvertisedWindow) {
+        return new TcpSegment(
+                sourceAddress,
+                destinationAddress,
+                sourcePort,
+                destinationPort,
+                sequenceNumber,
+                acknowledgmentNumber,
+                flags,
+                replacementAdvertisedWindow,
+                checksum,
+                payload);
+    }
+
     public TcpSegment withChecksum(int replacementChecksum) {
         return new TcpSegment(
                 sourceAddress,
