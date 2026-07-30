@@ -7,6 +7,7 @@ import com.ouc.tcp.core.ReceiveDisposition;
 import com.ouc.tcp.core.ReceiveResult;
 import com.ouc.tcp.core.ReceiverConfig;
 import com.ouc.tcp.core.SenderConfig;
+import com.ouc.tcp.core.SegmentAcceptability;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.core.TcpFlag;
 import com.ouc.tcp.core.TcpReceiverEngine;
@@ -91,6 +92,22 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
             throws IOException {
         checkAsynchronousFailure();
         Objects.requireNonNull(segment, "segment");
+        SegmentAcceptability acceptability =
+                receiver.segmentAcceptability(segment);
+        if (acceptability == SegmentAcceptability.OUTSIDE_WINDOW
+                && !segment.hasFlag(TcpFlag.SYN)
+                && !segment.hasFlag(TcpFlag.FIN)) {
+            if (!segment.hasFlag(TcpFlag.RST)) {
+                transport.send(currentAcknowledgment());
+            }
+            return new EndpointPollResult(
+                    segment,
+                    new byte[0],
+                    segment.payloadLength() > 0
+                            ? Optional.of(ReceiveDisposition.OUTSIDE_WINDOW)
+                            : Optional.empty(),
+                    Optional.empty());
+        }
         byte[] delivered = new byte[0];
         Optional<ReceiveDisposition> receiveDisposition = Optional.empty();
         if (segment.payloadLength() > 0) {
@@ -149,6 +166,11 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
                 sender.retransmissionTimeout());
     }
 
+    public synchronized SegmentAcceptability segmentAcceptability(
+            TcpSegment segment) {
+        return receiver.segmentAcceptability(segment);
+    }
+
     public synchronized SequenceNumber32 sendNext() {
         return sender.sendNext();
     }
@@ -173,6 +195,20 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
                 result.acknowledgmentNumber().toLong(),
                 Set.of(TcpFlag.ACK),
                 result.advertisedWindow(),
+                0,
+                new byte[0]));
+    }
+
+    private TcpSegment currentAcknowledgment() {
+        return TcpChecksum.apply(new TcpSegment(
+                config.localAddress(),
+                config.remoteAddress(),
+                config.localPort(),
+                config.remotePort(),
+                sender.sendNext().toLong(),
+                receiver.receiveNext().toLong(),
+                Set.of(TcpFlag.ACK),
+                receiver.advertisedWindow(),
                 0,
                 new byte[0]));
     }

@@ -9,6 +9,7 @@ import com.ouc.tcp.connection.TcpConnectionLifecycle;
 import com.ouc.tcp.connection.TcpHandshakeRunner;
 import com.ouc.tcp.connection.TcpState;
 import com.ouc.tcp.core.TcpFlag;
+import com.ouc.tcp.core.SegmentAcceptability;
 import com.ouc.tcp.core.TcpSegment;
 import com.ouc.tcp.timer.ExecutorScheduler;
 import com.ouc.tcp.timer.RetransmissionTimer;
@@ -182,6 +183,16 @@ public final class TcpSession implements AutoCloseable {
         checkAsynchronousControlFailure();
         TcpSegment segment = transport.receive(timeout);
         byte[] delivered = new byte[0];
+
+        if (segment.hasFlag(TcpFlag.RST)
+                && endpoint.segmentAcceptability(segment)
+                        != SegmentAcceptability.ACCEPTABLE) {
+            traceSenderSnapshot();
+            return new SessionEvent(
+                    segment,
+                    delivered,
+                    lifecycle.state());
+        }
 
         if (!segment.hasFlag(TcpFlag.RST)
                 && segment.hasFlag(TcpFlag.ACK)) {

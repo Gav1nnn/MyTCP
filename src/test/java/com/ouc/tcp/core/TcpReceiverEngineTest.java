@@ -208,6 +208,25 @@ class TcpReceiverEngineTest {
         assertEquals(100, receiver.receiveNext().toLong());
     }
 
+    @Test
+    void validatesSequenceSpaceForEmptyAcknowledgmentSegments()
+            throws Exception {
+        TcpReceiverEngine receiver = configuredReceiver();
+        TcpSegment current = segment(100, new byte[0]);
+        TcpSegment stale = segment(99, new byte[0]);
+
+        assertEquals(
+                SegmentAcceptability.ACCEPTABLE,
+                receiver.segmentAcceptability(current));
+        assertEquals(
+                SegmentAcceptability.OUTSIDE_WINDOW,
+                receiver.segmentAcceptability(stale));
+        assertEquals(
+                SegmentAcceptability.CHECKSUM_FAILED,
+                receiver.segmentAcceptability(
+                        current.withChecksum(current.checksum() ^ 1)));
+    }
+
     private static TcpReceiverEngine configuredReceiver() throws Exception {
         return new TcpReceiverEngine(new ReceiverConfig(
                 ipv4("198.51.100.2"),

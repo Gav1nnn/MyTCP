@@ -1,17 +1,26 @@
 package com.ouc.tcp.endpoint;
 
+import com.ouc.tcp.checksum.TcpChecksum;
 import com.ouc.tcp.core.SequenceNumber32;
+import com.ouc.tcp.core.TcpFlag;
+import com.ouc.tcp.core.TcpSegment;
+import com.ouc.tcp.transport.SegmentTransport;
 import com.ouc.tcp.transport.UdpSegmentTransport;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StandaloneTcpEndpointTest {
@@ -134,6 +143,50 @@ class StandaloneTcpEndpointTest {
         }
     }
 
+    @Test
+    void rejectsOutOfWindowPureAckBeforeItCanReleaseData()
+            throws Exception {
+        Inet4Address loopback = ipv4("127.0.0.1");
+        RecordingTransport transport = new RecordingTransport();
+        EndpointConfig config = new EndpointConfig(
+                loopback,
+                loopback,
+                19_001,
+                19_002,
+                SequenceNumber32.of(100),
+                SequenceNumber32.of(500),
+                32_768,
+                32_768,
+                1_200,
+                3_600,
+                65_535);
+
+        try (StandaloneTcpEndpoint endpoint =
+                new StandaloneTcpEndpoint(config, transport)) {
+            endpoint.send(new byte[] {1, 2, 3, 4});
+            TcpSegment staleAck = TcpChecksum.apply(new TcpSegment(
+                    loopback,
+                    loopback,
+                    19_002,
+                    19_001,
+                    499,
+                    104,
+                    Set.of(TcpFlag.ACK),
+                    32_768,
+                    0,
+                    new byte[0]));
+
+            endpoint.process(staleAck);
+
+            assertFalse(endpoint.sendComplete());
+            assertEquals(2, transport.sent().size());
+            TcpSegment challengeAck = transport.sent().get(1);
+            assertEquals(104, challengeAck.sequenceNumber());
+            assertEquals(500, challengeAck.acknowledgmentNumber());
+            assertEquals(Set.of(TcpFlag.ACK), challengeAck.flags());
+        }
+    }
+
     private static EndpointConfig config(
             Inet4Address address,
             int localPort,
@@ -156,5 +209,28 @@ class StandaloneTcpEndpointTest {
 
     private static Inet4Address ipv4(String address) throws Exception {
         return (Inet4Address) InetAddress.getByName(address);
+    }
+
+    private static final class RecordingTransport
+            implements SegmentTransport {
+        private final List<TcpSegment> sent = new ArrayList<>();
+
+        @Override
+        public void send(TcpSegment segment) {
+            sent.add(segment);
+        }
+
+        @Override
+        public TcpSegment receive(Duration timeout) throws IOException {
+            throw new IOException("receive is not used by this test");
+        }
+
+        @Override
+        public void close() {
+        }
+
+        private List<TcpSegment> sent() {
+            return List.copyOf(sent);
+        }
     }
 }

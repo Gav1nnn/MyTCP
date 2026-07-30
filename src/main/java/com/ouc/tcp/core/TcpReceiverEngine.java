@@ -67,6 +67,38 @@ public final class TcpReceiverEngine {
         return result(disposition, deliveredBytes, true);
     }
 
+    public synchronized SegmentAcceptability segmentAcceptability(
+            TcpSegment segment) {
+        Objects.requireNonNull(segment, "segment");
+        if (!matchesConnection(segment)) {
+            return SegmentAcceptability.WRONG_CONNECTION;
+        }
+        if (!hasValidChecksum(segment)) {
+            return SegmentAcceptability.CHECKSUM_FAILED;
+        }
+
+        int sequenceLength = segment.sequenceSpaceLength();
+        int window = controlBlock.advertisedWindow();
+        SequenceNumber32 start =
+                SequenceNumber32.of(segment.sequenceNumber());
+        if (sequenceLength == 0) {
+            boolean acceptable = window == 0
+                    ? start.equals(controlBlock.receiveNext())
+                    : isWithinReceiveWindow(start);
+            return acceptable
+                    ? SegmentAcceptability.ACCEPTABLE
+                    : SegmentAcceptability.OUTSIDE_WINDOW;
+        }
+        if (window == 0) {
+            return SegmentAcceptability.OUTSIDE_WINDOW;
+        }
+        SequenceNumber32 end = start.add(sequenceLength - 1L);
+        return isWithinReceiveWindow(start)
+                        || isWithinReceiveWindow(end)
+                ? SegmentAcceptability.ACCEPTABLE
+                : SegmentAcceptability.OUTSIDE_WINDOW;
+    }
+
     public synchronized SequenceNumber32 receiveNext() {
         return controlBlock.receiveNext();
     }
