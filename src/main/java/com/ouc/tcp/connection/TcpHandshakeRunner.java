@@ -37,6 +37,7 @@ public final class TcpHandshakeRunner {
     private HandshakeResult awaitEstablished() throws IOException {
         int timeoutCount = 0;
         int peerAdvertisedWindow = 0;
+        boolean localControlRetransmitted = false;
         while (timeoutCount < retryPolicy.maximumTimeouts()) {
             try {
                 TcpSegment received = transport.receive(retryPolicy.timeout());
@@ -50,7 +51,8 @@ public final class TcpHandshakeRunner {
                     return new HandshakeResult(
                             lifecycle.sendNext(),
                             lifecycle.receiveNext(),
-                            peerAdvertisedWindow);
+                            peerAdvertisedWindow,
+                            localControlRetransmitted);
                 }
             } catch (SocketTimeoutException timeout) {
                 timeoutCount++;
@@ -60,6 +62,7 @@ public final class TcpHandshakeRunner {
                             .orElse(null);
                     if (retry != null) {
                         transport.send(retry);
+                        localControlRetransmitted = true;
                     }
                 }
             }

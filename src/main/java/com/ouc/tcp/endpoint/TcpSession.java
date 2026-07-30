@@ -67,7 +67,8 @@ public final class TcpSession implements AutoCloseable {
                         connectionConfig.receiveWindow(),
                         handshake.peerAdvertisedWindow(),
                         tuning.maximumSegmentSize(),
-                        tuning.initialCongestionWindow(),
+                        tuning.initialWindowAfterHandshake(
+                                handshake.localControlRetransmitted()),
                         tuning.initialSlowStartThreshold()),
                 transport);
     }

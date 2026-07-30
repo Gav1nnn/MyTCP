@@ -11,7 +11,8 @@ import java.util.Objects;
 public record HandshakeResult(
         SequenceNumber32 sendNext,
         SequenceNumber32 receiveNext,
-        int peerAdvertisedWindow) {
+        int peerAdvertisedWindow,
+        boolean localControlRetransmitted) {
 
     public HandshakeResult {
         Objects.requireNonNull(sendNext, "sendNext");

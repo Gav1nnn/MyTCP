@@ -16,7 +16,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TcpHandshakeRunnerTest {
     @Test
@@ -30,6 +32,8 @@ class TcpHandshakeRunnerTest {
             assertEquals(1_001, handshakes.server.receiveNext().toLong());
             assertEquals(32_768, handshakes.client.peerAdvertisedWindow());
             assertEquals(32_768, handshakes.server.peerAdvertisedWindow());
+            assertFalse(handshakes.client.localControlRetransmitted());
+            assertFalse(handshakes.server.localControlRetransmitted());
         }
     }
 
@@ -40,6 +44,8 @@ class TcpHandshakeRunnerTest {
 
             assertEquals(1_001, handshakes.client.sendNext().toLong());
             assertEquals(1_001, handshakes.server.receiveNext().toLong());
+            assertTrue(handshakes.client.localControlRetransmitted());
+            assertFalse(handshakes.server.localControlRetransmitted());
         }
     }
 

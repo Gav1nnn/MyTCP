@@ -10,7 +10,7 @@ public record EndpointTuning(
 
     public static EndpointTuning defaults() {
         int mss = 1_200;
-        return new EndpointTuning(mss, 4L * mss, 65_535);
+        return new EndpointTuning(mss, 3L * mss, 65_535);
     }
 
     public EndpointTuning {
@@ -20,5 +20,12 @@ public record EndpointTuning(
             throw new IllegalArgumentException(
                     "endpoint tuning values must be positive");
         }
+    }
+
+    public long initialWindowAfterHandshake(
+            boolean localControlRetransmitted) {
+        return localControlRetransmitted
+                ? Math.min(initialCongestionWindow, maximumSegmentSize)
+                : initialCongestionWindow;
     }
 }
