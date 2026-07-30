@@ -1,9 +1,11 @@
 .DS_Store
 target/
 
-# Runtime output produced by the teaching framework
+# Local experiment output
 Log.txt
 recvData.txt
+*.trace
+received.bin
 
 # IDE metadata
 .idea/
