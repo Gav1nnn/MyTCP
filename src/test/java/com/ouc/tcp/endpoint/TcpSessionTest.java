@@ -2,6 +2,7 @@ package com.ouc.tcp.endpoint;
 
 import com.ouc.tcp.connection.ConnectionConfig;
 import com.ouc.tcp.connection.ControlRetryPolicy;
+import com.ouc.tcp.connection.SessionTiming;
 import com.ouc.tcp.connection.TcpState;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.transport.UdpSegmentTransport;
@@ -45,9 +46,17 @@ class TcpSessionTest {
         try {
             Future<TcpSession> passive = executor.submit(() ->
                     TcpSession.openPassive(
-                            serverConfig, serverTransport, retry, tuning));
+                            serverConfig,
+                            serverTransport,
+                            retry,
+                            new SessionTiming(Duration.ofMillis(5)),
+                            tuning));
             try (TcpSession client = TcpSession.openActive(
-                            clientConfig, clientTransport, retry, tuning);
+                            clientConfig,
+                            clientTransport,
+                            retry,
+                            new SessionTiming(Duration.ofMillis(5)),
+                            tuning);
                     TcpSession server = passive.get()) {
                 byte[] expected = new byte[25_123];
                 for (int index = 0; index < expected.length; index++) {
@@ -80,7 +89,13 @@ class TcpSessionTest {
                 assertEquals(TcpState.TIME_WAIT, client.state());
                 server.poll(Duration.ofSeconds(1));
                 assertEquals(TcpState.CLOSED, server.state());
-                client.expireTimeWait();
+                while (client.state() != TcpState.CLOSED) {
+                    try {
+                        client.poll(Duration.ofMillis(20));
+                    } catch (java.net.SocketTimeoutException timeout) {
+                        // The TIME-WAIT timer advances independently.
+                    }
+                }
                 assertEquals(TcpState.CLOSED, client.state());
             }
         } finally {

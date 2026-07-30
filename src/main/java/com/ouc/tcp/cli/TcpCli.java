@@ -65,12 +65,8 @@ public final class TcpCli {
             }
 
             session.initiateClose();
-            while (session.state() != TcpState.TIME_WAIT
-                    && session.state() != TcpState.CLOSED) {
+            while (session.state() != TcpState.CLOSED) {
                 pollIgnoringIdleTimeout(session);
-            }
-            if (session.state() == TcpState.TIME_WAIT) {
-                session.expireTimeWait();
             }
         }
         System.out.println("sent " + input.length + " bytes");
