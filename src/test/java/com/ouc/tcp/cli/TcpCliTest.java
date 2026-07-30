@@ -52,7 +52,9 @@ class TcpCliTest {
                 Integer.toString(serverPort),
                 input.toString(),
                 "--trace",
-                clientTrace.toString()
+                clientTrace.toString(),
+                "--fault",
+                "3=drop,4=duplicate,5=reorder,9=corrupt"
             });
             server.get();
         } finally {
@@ -67,6 +69,14 @@ class TcpCliTest {
         assertTrue(clientEvents.contains("flags=SYN"));
         assertTrue(clientEvents.contains("event=sender state=ESTABLISHED"));
         assertTrue(clientEvents.contains("snd_una="));
+        assertTrue(clientEvents.contains(
+                "event=fault transmission=3 action=DROP"));
+        assertTrue(clientEvents.contains(
+                "event=fault transmission=4 action=DUPLICATE"));
+        assertTrue(clientEvents.contains(
+                "event=fault transmission=5 action=REORDER"));
+        assertTrue(clientEvents.contains(
+                "event=fault transmission=9 action=CORRUPT"));
         assertTrue(serverEvents.contains(
                 "event=state from=LISTEN to=SYN_RECEIVED"));
         assertTrue(serverEvents.contains("direction=RECEIVE"));
@@ -86,6 +96,16 @@ class TcpCliTest {
                 IllegalArgumentException.class,
                 () -> TcpCli.run(new String[] {
                     "server", "0", "19002", "file"
+                }));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TcpCli.run(new String[] {
+                    "server",
+                    "19001",
+                    "19002",
+                    "file",
+                    "--fault",
+                    "1=unknown"
                 }));
     }
 

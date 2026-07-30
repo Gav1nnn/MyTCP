@@ -11,6 +11,8 @@ import com.ouc.tcp.endpoint.TcpSession;
 import com.ouc.tcp.trace.ProtocolTrace;
 import com.ouc.tcp.trace.TextProtocolTrace;
 import com.ouc.tcp.trace.TracingSegmentTransport;
+import com.ouc.tcp.transport.FaultInjectingTransport;
+import com.ouc.tcp.transport.FaultPlan;
 import com.ouc.tcp.transport.SegmentTransport;
 import com.ouc.tcp.transport.UdpSegmentTransport;
 
@@ -58,11 +60,8 @@ public final class TcpCli {
         byte[] input = Files.readAllBytes(arguments.file());
         Inet4Address loopback = loopback();
         try (ProtocolTrace trace = trace(arguments);
-                SegmentTransport transport = new TracingSegmentTransport(
-                        new UdpSegmentTransport(
-                                loopback,
-                                arguments.localPort()),
-                        trace);
+                SegmentTransport transport =
+                        transport(arguments, loopback, trace);
                 TcpSession session = TcpSession.openActive(
                         connection(arguments, loopback),
                         transport,
@@ -87,11 +86,8 @@ public final class TcpCli {
         Inet4Address loopback = loopback();
         long receivedBytes = 0;
         try (ProtocolTrace trace = trace(arguments);
-                SegmentTransport transport = new TracingSegmentTransport(
-                        new UdpSegmentTransport(
-                                loopback,
-                                arguments.localPort()),
-                        trace);
+                SegmentTransport transport =
+                        transport(arguments, loopback, trace);
                 TcpSession session = TcpSession.openPassive(
                         connection(arguments, loopback),
                         transport,
@@ -158,6 +154,24 @@ public final class TcpCli {
                         Files.newBufferedWriter(arguments.traceFile()));
     }
 
+    private static SegmentTransport transport(
+            CliArguments arguments,
+            Inet4Address loopback,
+            ProtocolTrace trace) throws IOException {
+        SegmentTransport transport = new TracingSegmentTransport(
+                new UdpSegmentTransport(
+                        loopback,
+                        arguments.localPort()),
+                trace);
+        if (!arguments.faultPlan().isEmpty()) {
+            transport = new FaultInjectingTransport(
+                    transport,
+                    arguments.faultPlan(),
+                    trace);
+        }
+        return transport;
+    }
+
     private static Inet4Address loopback() throws Exception {
         return (Inet4Address) InetAddress.getByName("127.0.0.1");
     }
@@ -172,12 +186,14 @@ public final class TcpCli {
             int localPort,
             int peerPort,
             Path file,
-            Path traceFile) {
+            Path traceFile,
+            FaultPlan faultPlan) {
 
         private static CliArguments parse(String[] arguments) {
             if (arguments == null
-                    || (arguments.length != 4
-                            && arguments.length != 6)) {
+                    || arguments.length < 4
+                    || arguments.length > 8
+                    || arguments.length % 2 != 0) {
                 throw usage();
             }
             Mode mode = switch (arguments[0]) {
@@ -193,20 +209,36 @@ public final class TcpCli {
                         "input file does not exist: " + file);
             }
             Path traceFile = null;
-            if (arguments.length == 6) {
-                if (!"--trace".equals(arguments[4])) {
-                    throw usage();
+            FaultPlan faultPlan = FaultPlan.none();
+            boolean faultConfigured = false;
+            for (int index = 4; index < arguments.length; index += 2) {
+                switch (arguments[index]) {
+                    case "--trace" -> {
+                        if (traceFile != null) {
+                            throw usage();
+                        }
+                        traceFile = Path.of(arguments[index + 1])
+                                .toAbsolutePath()
+                                .normalize();
+                    }
+                    case "--fault" -> {
+                        if (faultConfigured) {
+                            throw usage();
+                        }
+                        faultPlan = FaultPlan.parse(
+                                arguments[index + 1]);
+                        faultConfigured = true;
+                    }
+                    default -> throw usage();
                 }
-                traceFile = Path.of(arguments[5])
-                        .toAbsolutePath()
-                        .normalize();
             }
             return new CliArguments(
                     mode,
                     localPort,
                     peerPort,
                     file,
-                    traceFile);
+                    traceFile,
+                    faultPlan);
         }
 
         private static int port(String text, String name) {
@@ -226,7 +258,8 @@ public final class TcpCli {
             return new IllegalArgumentException(
                     "usage: mytcp <client|server> "
                             + "<local-port> <peer-port> <file> "
-                            + "[--trace <trace-file>]");
+                            + "[--trace <trace-file>] "
+                            + "[--fault <N=action,...>]");
         }
     }
 }
