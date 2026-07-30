@@ -9,11 +9,15 @@ import com.ouc.tcp.connection.TcpHandshakeRunner;
 import com.ouc.tcp.connection.TcpState;
 import com.ouc.tcp.core.TcpFlag;
 import com.ouc.tcp.core.TcpSegment;
+import com.ouc.tcp.timer.ExecutorScheduler;
+import com.ouc.tcp.timer.RetransmissionTimer;
+import com.ouc.tcp.timer.RttEstimator;
 import com.ouc.tcp.transport.SegmentTransport;
 
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Coordinates handshake, established data transfer, and orderly close.
@@ -22,15 +26,30 @@ public final class TcpSession implements AutoCloseable {
     private final SegmentTransport transport;
     private final TcpConnectionLifecycle lifecycle;
     private final StandaloneTcpEndpoint endpoint;
+    private final ControlRetryPolicy controlRetryPolicy;
+    private final ExecutorScheduler controlScheduler;
+    private final RetransmissionTimer controlRetransmissionTimer;
+    private final Object controlTimerLock = new Object();
+    private final AtomicReference<IOException> asynchronousControlFailure =
+            new AtomicReference<>();
+
+    private Duration controlRetransmissionTimeout;
+    private int controlTimeoutCount;
 
     private TcpSession(
             ConnectionConfig connectionConfig,
             SegmentTransport transport,
             TcpConnectionLifecycle lifecycle,
             HandshakeResult handshake,
+            ControlRetryPolicy controlRetryPolicy,
             EndpointTuning tuning) {
         this.transport = transport;
         this.lifecycle = lifecycle;
+        this.controlRetryPolicy = controlRetryPolicy;
+        controlScheduler = new ExecutorScheduler(
+                "standalone-tcp-control-" + connectionConfig.localPort());
+        controlRetransmissionTimer =
+                new RetransmissionTimer(controlScheduler);
         endpoint = new StandaloneTcpEndpoint(
                 new EndpointConfig(
                         connectionConfig.localAddress(),
@@ -66,11 +85,13 @@ public final class TcpSession implements AutoCloseable {
     }
 
     public void send(byte[] data) throws IOException {
+        checkAsynchronousControlFailure();
         requireState(TcpState.ESTABLISHED);
         endpoint.send(data);
     }
 
     public SessionEvent poll(Duration timeout) throws IOException {
+        checkAsynchronousControlFailure();
         TcpSegment segment = transport.receive(timeout);
         byte[] delivered = new byte[0];
 
@@ -87,11 +108,14 @@ public final class TcpSession implements AutoCloseable {
                         endpoint.receiveNext());
             }
             send(lifecycle.receive(segment));
+            stopControlTimerIfAcknowledged();
         }
+        checkAsynchronousControlFailure();
         return new SessionEvent(segment, delivered, lifecycle.state());
     }
 
     public void initiateClose() throws IOException {
+        checkAsynchronousControlFailure();
         if (!endpoint.sendComplete()) {
             throw new IllegalStateException(
                     "connection cannot close with outstanding application data");
@@ -100,6 +124,7 @@ public final class TcpSession implements AutoCloseable {
             synchronizeSequenceSpace();
         }
         send(lifecycle.close(endpoint.sendNext(), lifecycle.receiveNext()));
+        startControlRetransmissionTimer();
     }
 
     public void expireTimeWait() {
@@ -120,6 +145,8 @@ public final class TcpSession implements AutoCloseable {
 
     @Override
     public void close() {
+        controlRetransmissionTimer.stop();
+        controlScheduler.close();
         endpoint.close();
     }
 
@@ -141,7 +168,12 @@ public final class TcpSession implements AutoCloseable {
                 ? handshakeRunner.activeOpen()
                 : handshakeRunner.passiveOpen();
         return new TcpSession(
-                connectionConfig, transport, lifecycle, handshake, tuning);
+                connectionConfig,
+                transport,
+                lifecycle,
+                handshake,
+                retryPolicy,
+                tuning);
     }
 
     private boolean lifecycleNeeds(TcpSegment segment) {
@@ -168,6 +200,85 @@ public final class TcpSession implements AutoCloseable {
     private void send(LifecycleResult result) throws IOException {
         for (TcpSegment segment : result.transmissions()) {
             transport.send(segment);
+        }
+    }
+
+    private void startControlRetransmissionTimer() {
+        synchronized (controlTimerLock) {
+            controlTimeoutCount = 0;
+            controlRetransmissionTimeout = controlRetryPolicy.timeout();
+            scheduleControlTimeout();
+        }
+    }
+
+    private void stopControlTimerIfAcknowledged() {
+        if (lifecycle.retransmissionCandidate().isPresent()) {
+            return;
+        }
+        synchronized (controlTimerLock) {
+            controlRetransmissionTimer.stop();
+            controlRetransmissionTimeout = null;
+            controlTimeoutCount = 0;
+        }
+    }
+
+    private void scheduleControlTimeout() {
+        controlRetransmissionTimer.startOrRestart(
+                controlRetransmissionTimeout,
+                this::onControlRetransmissionTimeout);
+    }
+
+    private void onControlRetransmissionTimeout() {
+        TcpSegment retransmission;
+        synchronized (controlTimerLock) {
+            retransmission = lifecycle.retransmissionCandidate().orElse(null);
+            if (retransmission == null) {
+                controlRetransmissionTimeout = null;
+                controlTimeoutCount = 0;
+                return;
+            }
+            controlTimeoutCount++;
+            if (controlTimeoutCount
+                    >= controlRetryPolicy.maximumTimeouts()) {
+                asynchronousControlFailure.compareAndSet(
+                        null,
+                        new IOException(
+                                "TCP control retransmission exceeded "
+                                        + controlRetryPolicy.maximumTimeouts()
+                                        + " timeouts"));
+                controlRetransmissionTimeout = null;
+                return;
+            }
+            controlRetransmissionTimeout =
+                    doubledControlTimeout(controlRetransmissionTimeout);
+            scheduleControlTimeout();
+        }
+        try {
+            transport.send(retransmission);
+        } catch (IOException failure) {
+            asynchronousControlFailure.compareAndSet(null, failure);
+            controlRetransmissionTimer.stop();
+        }
+    }
+
+    private static Duration doubledControlTimeout(Duration timeout) {
+        Duration doubled;
+        try {
+            doubled = timeout.multipliedBy(2);
+        } catch (ArithmeticException overflow) {
+            return RttEstimator.DEFAULT_MAXIMUM_RTO;
+        }
+        return doubled.compareTo(RttEstimator.DEFAULT_MAXIMUM_RTO) > 0
+                ? RttEstimator.DEFAULT_MAXIMUM_RTO
+                : doubled;
+    }
+
+    private void checkAsynchronousControlFailure() throws IOException {
+        IOException failure = asynchronousControlFailure.get();
+        if (failure != null) {
+            throw new IOException(
+                    "asynchronous TCP control transmission failed",
+                    failure);
         }
     }
 
