@@ -45,11 +45,26 @@ public final class TcpSenderEngine {
             Clock clock,
             Scheduler scheduler,
             Consumer<TcpSegment> retransmissionSink) {
+        this(
+                config,
+                clock,
+                scheduler,
+                retransmissionSink,
+                new RttEstimator());
+    }
+
+    public TcpSenderEngine(
+            SenderConfig config,
+            Clock clock,
+            Scheduler scheduler,
+            Consumer<TcpSegment> retransmissionSink,
+            RttEstimator rttEstimator) {
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.retransmissionSink =
                 Objects.requireNonNull(retransmissionSink, "retransmissionSink");
-        this.rttEstimator = new RttEstimator();
+        this.rttEstimator =
+                Objects.requireNonNull(rttEstimator, "rttEstimator");
         this.retransmissionTimer =
                 new RetransmissionTimer(Objects.requireNonNull(scheduler, "scheduler"));
         this.persistTimer = new RetransmissionTimer(scheduler);

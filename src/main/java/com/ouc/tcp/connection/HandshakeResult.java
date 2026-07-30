@@ -3,6 +3,7 @@ package com.ouc.tcp.connection;
 import com.ouc.tcp.core.SequenceNumber32;
 import com.ouc.tcp.core.TcpSegment;
 
+import java.time.Duration;
 import java.util.Objects;
 
 /**
@@ -22,5 +23,11 @@ public record HandshakeResult(
             throw new IllegalArgumentException(
                     "peerAdvertisedWindow must be an unsigned 16-bit value");
         }
+    }
+
+    public Duration initialDataRetransmissionTimeout() {
+        return localControlRetransmitted
+                ? Duration.ofSeconds(3)
+                : Duration.ofSeconds(1);
     }
 }

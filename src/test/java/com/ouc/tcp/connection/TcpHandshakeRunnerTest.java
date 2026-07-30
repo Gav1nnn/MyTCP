@@ -36,6 +36,9 @@ class TcpHandshakeRunnerTest {
             assertEquals(32_768, handshakes.server.peerAdvertisedWindow());
             assertFalse(handshakes.client.localControlRetransmitted());
             assertFalse(handshakes.server.localControlRetransmitted());
+            assertEquals(
+                    Duration.ofSeconds(1),
+                    handshakes.client.initialDataRetransmissionTimeout());
         }
     }
 
@@ -48,6 +51,9 @@ class TcpHandshakeRunnerTest {
             assertEquals(1_001, handshakes.server.receiveNext().toLong());
             assertTrue(handshakes.client.localControlRetransmitted());
             assertFalse(handshakes.server.localControlRetransmitted());
+            assertEquals(
+                    Duration.ofSeconds(3),
+                    handshakes.client.initialDataRetransmissionTimeout());
         }
     }
 

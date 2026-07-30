@@ -68,7 +68,8 @@ public final class TcpSession implements AutoCloseable {
                         tuning.maximumSegmentSize(),
                         tuning.initialWindowAfterHandshake(
                                 handshake.localControlRetransmitted()),
-                        tuning.initialSlowStartThreshold()),
+                        tuning.initialSlowStartThreshold(),
+                        handshake.initialDataRetransmissionTimeout()),
                 transport);
     }
 
@@ -195,6 +196,10 @@ public final class TcpSession implements AutoCloseable {
 
     public long congestionWindow() {
         return endpoint.congestionWindow();
+    }
+
+    public Duration retransmissionTimeout() {
+        return endpoint.retransmissionTimeout();
     }
 
     @Override

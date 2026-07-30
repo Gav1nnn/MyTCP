@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StandaloneTcpEndpointTest {
@@ -103,6 +104,33 @@ class StandaloneTcpEndpointTest {
             assertArrayEquals(fromLeft, atRight.toByteArray());
             assertTrue(left.sendComplete());
             assertTrue(right.sendComplete());
+        }
+    }
+
+    @Test
+    void usesConfiguredInitialRetransmissionTimeout() throws Exception {
+        Inet4Address loopback = ipv4("127.0.0.1");
+        UdpSegmentTransport transport =
+                new UdpSegmentTransport(loopback, 0);
+        EndpointConfig config = new EndpointConfig(
+                loopback,
+                loopback,
+                transport.localPort(),
+                19_002,
+                SequenceNumber32.of(1_001),
+                SequenceNumber32.of(9_001),
+                32_768,
+                32_768,
+                1_200,
+                1_200,
+                65_535,
+                Duration.ofSeconds(3));
+
+        try (StandaloneTcpEndpoint endpoint =
+                new StandaloneTcpEndpoint(config, transport)) {
+            assertEquals(
+                    Duration.ofSeconds(3),
+                    endpoint.retransmissionTimeout());
         }
     }
 

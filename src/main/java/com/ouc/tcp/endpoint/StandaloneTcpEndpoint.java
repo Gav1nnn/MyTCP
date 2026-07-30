@@ -14,6 +14,7 @@ import com.ouc.tcp.core.TcpSegment;
 import com.ouc.tcp.core.TcpSenderEngine;
 import com.ouc.tcp.timer.Clock;
 import com.ouc.tcp.timer.ExecutorScheduler;
+import com.ouc.tcp.timer.RttEstimator;
 import com.ouc.tcp.transport.SegmentTransport;
 
 import java.io.IOException;
@@ -59,7 +60,12 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
                         config.initialSlowStartThreshold()),
                 Clock.system(),
                 scheduler,
-                this::sendFromTimer);
+                this::sendFromTimer,
+                new RttEstimator(
+                        config.initialRetransmissionTimeout(),
+                        RttEstimator.DEFAULT_MINIMUM_RTO,
+                        RttEstimator.DEFAULT_MAXIMUM_RTO,
+                        RttEstimator.DEFAULT_CLOCK_GRANULARITY));
         receiver = new TcpReceiverEngine(new ReceiverConfig(
                 config.localAddress(),
                 config.remoteAddress(),
@@ -125,6 +131,10 @@ public final class StandaloneTcpEndpoint implements AutoCloseable {
 
     public synchronized int sendWindow() {
         return sender.sendWindow();
+    }
+
+    public synchronized Duration retransmissionTimeout() {
+        return sender.retransmissionTimeout();
     }
 
     public synchronized SequenceNumber32 sendNext() {
