@@ -67,7 +67,8 @@ public final class TcpConnectionLifecycle {
             case FIN_WAIT_1 -> receiveInFinWaitOne(segment, previous);
             case FIN_WAIT_2 -> receiveFin(segment, previous, TcpState.TIME_WAIT);
             case CLOSING -> receiveClosingAck(segment, previous);
-            case CLOSE_WAIT, LAST_ACK -> receiveLastAck(segment, previous);
+            case CLOSE_WAIT -> receiveInCloseWait(segment, previous);
+            case LAST_ACK -> receiveLastAck(segment, previous);
             case TIME_WAIT -> receiveInTimeWait(segment, previous);
             case CLOSED -> result(false, previous, List.of());
         };
@@ -104,6 +105,19 @@ public final class TcpConnectionLifecycle {
                     "sequence space cannot be synchronized from " + state);
         }
         sendNext = currentSendNext;
+        receiveNext = currentReceiveNext;
+    }
+
+    public synchronized void synchronizeReceiveSequenceSpace(
+            SequenceNumber32 currentReceiveNext) {
+        Objects.requireNonNull(currentReceiveNext, "currentReceiveNext");
+        if (state != TcpState.ESTABLISHED
+                && state != TcpState.FIN_WAIT_1
+                && state != TcpState.FIN_WAIT_2
+                && state != TcpState.CLOSE_WAIT) {
+            throw new IllegalStateException(
+                    "receive sequence space cannot be synchronized from " + state);
+        }
         receiveNext = currentReceiveNext;
     }
 
@@ -180,7 +194,7 @@ public final class TcpConnectionLifecycle {
                     control(sendNext, receiveNext, Set.of(TcpFlag.ACK))));
         }
         if (!segment.hasFlag(TcpFlag.FIN)
-                || segment.sequenceNumber() != receiveNext.toLong()) {
+                || finSequence(segment).toLong() != receiveNext.toLong()) {
             return result(false, previous, List.of());
         }
         receiveNext = receiveNext.add(1);
@@ -193,7 +207,7 @@ public final class TcpConnectionLifecycle {
             TcpSegment segment, TcpState previous) {
         boolean acknowledgesFin = acceptableAck(segment);
         boolean carriesExpectedFin = segment.hasFlag(TcpFlag.FIN)
-                && segment.sequenceNumber() == receiveNext.toLong();
+                && finSequence(segment).toLong() == receiveNext.toLong();
         if (!acknowledgesFin && !carriesExpectedFin) {
             return result(false, previous, List.of());
         }
@@ -216,7 +230,7 @@ public final class TcpConnectionLifecycle {
     private LifecycleResult receiveFin(
             TcpSegment segment, TcpState previous, TcpState nextState) {
         if (!segment.hasFlag(TcpFlag.FIN)
-                || segment.sequenceNumber() != receiveNext.toLong()) {
+                || finSequence(segment).toLong() != receiveNext.toLong()) {
             return result(false, previous, List.of());
         }
         receiveNext = receiveNext.add(1);
@@ -227,27 +241,58 @@ public final class TcpConnectionLifecycle {
 
     private LifecycleResult receiveClosingAck(
             TcpSegment segment, TcpState previous) {
-        if (!acceptableAck(segment)) {
+        boolean acknowledgesFin = acceptableAck(segment);
+        boolean repeatsPeerFin = isDuplicateFin(segment);
+        if (!acknowledgesFin && !repeatsPeerFin) {
             return result(false, previous, List.of());
         }
-        outstandingControl = null;
-        state = TcpState.TIME_WAIT;
-        return result(true, previous, List.of());
+        if (acknowledgesFin) {
+            outstandingControl = null;
+            state = TcpState.TIME_WAIT;
+        }
+        return result(
+                true,
+                previous,
+                repeatsPeerFin
+                        ? List.of(control(
+                                sendNext,
+                                receiveNext,
+                                Set.of(TcpFlag.ACK)))
+                        : List.of());
+    }
+
+    private LifecycleResult receiveInCloseWait(
+            TcpSegment segment, TcpState previous) {
+        if (!isDuplicateFin(segment)) {
+            return result(false, previous, List.of());
+        }
+        return result(true, previous, List.of(
+                control(sendNext, receiveNext, Set.of(TcpFlag.ACK))));
     }
 
     private LifecycleResult receiveLastAck(
             TcpSegment segment, TcpState previous) {
-        if (state != TcpState.LAST_ACK || !acceptableAck(segment)) {
+        boolean acknowledgesFin = acceptableAck(segment);
+        boolean repeatsPeerFin = isDuplicateFin(segment);
+        if (!acknowledgesFin && !repeatsPeerFin) {
             return result(false, previous, List.of());
         }
-        outstandingControl = null;
-        state = TcpState.CLOSED;
-        return result(true, previous, List.of());
+        List<TcpSegment> transmissions = repeatsPeerFin
+                ? List.of(control(
+                        sendNext,
+                        receiveNext,
+                        Set.of(TcpFlag.ACK)))
+                : List.of();
+        if (acknowledgesFin) {
+            outstandingControl = null;
+            state = TcpState.CLOSED;
+        }
+        return result(true, previous, transmissions);
     }
 
     private LifecycleResult receiveInTimeWait(
             TcpSegment segment, TcpState previous) {
-        if (!segment.hasFlag(TcpFlag.FIN)) {
+        if (!isDuplicateFin(segment)) {
             return result(false, previous, List.of());
         }
         return result(true, previous, List.of(
@@ -273,6 +318,17 @@ public final class TcpConnectionLifecycle {
                 && SequenceNumber32.of(segment.sequenceNumber())
                         .add(1)
                         .equals(receiveNext);
+    }
+
+    private boolean isDuplicateFin(TcpSegment segment) {
+        return segment.hasFlag(TcpFlag.FIN)
+                && finSequence(segment).add(1).equals(receiveNext);
+    }
+
+    private static SequenceNumber32 finSequence(TcpSegment segment) {
+        return SequenceNumber32
+                .of(segment.sequenceNumber())
+                .add(segment.payloadLength());
     }
 
     private TcpSegment requireOutstandingControl() {

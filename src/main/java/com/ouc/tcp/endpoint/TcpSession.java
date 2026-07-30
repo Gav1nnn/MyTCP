@@ -82,8 +82,9 @@ public final class TcpSession implements AutoCloseable {
 
         if (lifecycleNeeds(segment)) {
             if (segment.hasFlag(TcpFlag.FIN)
-                    && lifecycle.state() == TcpState.ESTABLISHED) {
-                synchronizeSequenceSpace();
+                    && canSynchronizeReceiveSequenceSpace()) {
+                lifecycle.synchronizeReceiveSequenceSpace(
+                        endpoint.receiveNext());
             }
             send(lifecycle.receive(segment));
         }
@@ -155,6 +156,13 @@ public final class TcpSession implements AutoCloseable {
     private void synchronizeSequenceSpace() {
         lifecycle.synchronizeEstablishedSequenceSpace(
                 endpoint.sendNext(), endpoint.receiveNext());
+    }
+
+    private boolean canSynchronizeReceiveSequenceSpace() {
+        return lifecycle.state() == TcpState.ESTABLISHED
+                || lifecycle.state() == TcpState.FIN_WAIT_1
+                || lifecycle.state() == TcpState.FIN_WAIT_2
+                || lifecycle.state() == TcpState.CLOSE_WAIT;
     }
 
     private void send(LifecycleResult result) throws IOException {

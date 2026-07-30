@@ -157,6 +157,44 @@ class TcpConnectionLifecycleTest {
     }
 
     @Test
+    void finSequenceFollowsPayloadSequenceSpace() throws Exception {
+        Peers peers = establishedPeers();
+        TcpSegment dataAndFin = TcpChecksum.apply(new TcpSegment(
+                peers.clientConfig.localAddress(),
+                peers.clientConfig.remoteAddress(),
+                peers.clientConfig.localPort(),
+                peers.clientConfig.remotePort(),
+                CLIENT_ISN + 1,
+                SERVER_ISN + 1,
+                Set.of(TcpFlag.ACK, TcpFlag.FIN),
+                32_768,
+                0,
+                new byte[] {1, 2, 3}));
+        peers.server.synchronizeReceiveSequenceSpace(
+                SequenceNumber32.of(CLIENT_ISN + 4));
+
+        TcpSegment acknowledgment = only(peers.server.receive(dataAndFin));
+
+        assertEquals(TcpState.CLOSE_WAIT, peers.server.state());
+        assertEquals(CLIENT_ISN + 5, acknowledgment.acknowledgmentNumber());
+    }
+
+    @Test
+    void duplicateFinIsAcknowledgedWhileClosing() throws Exception {
+        Peers peers = establishedPeers();
+        TcpSegment clientFin = only(peers.client.close(
+                SequenceNumber32.of(CLIENT_ISN + 1),
+                SequenceNumber32.of(SERVER_ISN + 1)));
+        TcpSegment firstAck = only(peers.server.receive(clientFin));
+        assertEquals(TcpState.CLOSE_WAIT, peers.server.state());
+
+        TcpSegment repeatedAck = only(peers.server.receive(clientFin));
+
+        assertEquals(firstAck, repeatedAck);
+        assertEquals(TcpState.CLOSE_WAIT, peers.server.state());
+    }
+
+    @Test
     void rejectsInvalidLifecycleCalls() throws Exception {
         Peers peers = peers();
 
