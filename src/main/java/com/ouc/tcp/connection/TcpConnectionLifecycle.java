@@ -63,9 +63,7 @@ public final class TcpConnectionLifecycle {
             return result(false, previous, List.of());
         }
         if (segment.hasFlag(TcpFlag.RST)) {
-            state = TcpState.CLOSED;
-            outstandingControl = null;
-            return result(true, previous, List.of());
+            return receiveReset(segment, previous);
         }
 
         return switch (state) {
@@ -168,6 +166,43 @@ public final class TcpConnectionLifecycle {
         sendNext = sendNext.add(1);
         state = TcpState.SYN_RECEIVED;
         return result(true, previous, List.of(synAck));
+    }
+
+    private LifecycleResult receiveReset(
+            TcpSegment segment,
+            TcpState previous) {
+        if (state == TcpState.CLOSED || state == TcpState.LISTEN) {
+            return result(false, previous, List.of());
+        }
+        if (state == TcpState.SYN_SENT) {
+            if (!segment.hasFlag(TcpFlag.ACK)
+                    || segment.acknowledgmentNumber()
+                            != sendNext.toLong()) {
+                return result(false, previous, List.of());
+            }
+            state = TcpState.CLOSED;
+            outstandingControl = null;
+            return result(true, previous, List.of());
+        }
+
+        SequenceNumber32 resetSequence =
+                SequenceNumber32.of(segment.sequenceNumber());
+        if (resetSequence.equals(receiveNext)) {
+            state = state == TcpState.SYN_RECEIVED
+                    ? TcpState.LISTEN
+                    : TcpState.CLOSED;
+            outstandingControl = null;
+            return result(true, previous, List.of());
+        }
+        if (receiveNext.distanceTo(resetSequence)
+                < config.receiveWindow()) {
+            return result(false, previous, List.of(
+                    control(
+                            sendNext,
+                            receiveNext,
+                            Set.of(TcpFlag.ACK))));
+        }
+        return result(false, previous, List.of());
     }
 
     private LifecycleResult receiveInSynSent(TcpSegment segment, TcpState previous) {

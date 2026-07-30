@@ -183,9 +183,11 @@ public final class TcpSession implements AutoCloseable {
         TcpSegment segment = transport.receive(timeout);
         byte[] delivered = new byte[0];
 
-        if (segment.hasFlag(TcpFlag.ACK)) {
+        if (!segment.hasFlag(TcpFlag.RST)
+                && segment.hasFlag(TcpFlag.ACK)) {
             delivered = endpoint.process(segment).deliveredBytes();
-        } else if (segment.payloadLength() > 0) {
+        } else if (!segment.hasFlag(TcpFlag.RST)
+                && segment.payloadLength() > 0) {
             delivered = endpoint.process(segment).deliveredBytes();
         }
 

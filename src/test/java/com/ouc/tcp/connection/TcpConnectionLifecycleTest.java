@@ -157,6 +157,52 @@ class TcpConnectionLifecycleTest {
     }
 
     @Test
+    void resetIsIgnoredWhileListening() throws Exception {
+        Peers peers = peers();
+        TcpSegment reset = TcpChecksum.apply(new TcpSegment(
+                peers.clientConfig.localAddress(),
+                peers.clientConfig.remoteAddress(),
+                peers.clientConfig.localPort(),
+                peers.clientConfig.remotePort(),
+                CLIENT_ISN,
+                0,
+                Set.of(TcpFlag.RST),
+                32_768,
+                0,
+                new byte[0]));
+
+        LifecycleResult result = peers.server.receive(reset);
+
+        assertFalse(result.accepted());
+        assertEquals(TcpState.LISTEN, peers.server.state());
+    }
+
+    @Test
+    void inWindowResetUsesChallengeAckUnlessItExactlyMatchesRcvNxt()
+            throws Exception {
+        Peers peers = establishedPeers();
+        TcpSegment reset = TcpChecksum.apply(new TcpSegment(
+                peers.clientConfig.localAddress(),
+                peers.clientConfig.remoteAddress(),
+                peers.clientConfig.localPort(),
+                peers.clientConfig.remotePort(),
+                CLIENT_ISN + 2,
+                SERVER_ISN + 1,
+                Set.of(TcpFlag.RST),
+                32_768,
+                0,
+                new byte[0]));
+
+        LifecycleResult result = peers.server.receive(reset);
+
+        assertFalse(result.accepted());
+        assertEquals(TcpState.ESTABLISHED, peers.server.state());
+        TcpSegment challengeAck = only(result);
+        assertEquals(CLIENT_ISN + 1, challengeAck.acknowledgmentNumber());
+        assertEquals(Set.of(TcpFlag.ACK), challengeAck.flags());
+    }
+
+    @Test
     void finSequenceFollowsPayloadSequenceSpace() throws Exception {
         Peers peers = establishedPeers();
         TcpSegment dataAndFin = TcpChecksum.apply(new TcpSegment(
